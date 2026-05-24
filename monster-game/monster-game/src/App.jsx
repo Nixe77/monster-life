@@ -2436,7 +2436,7 @@ function QuestScreen({s,d}){
     const sk=SKILLS[MONS[sm.type]?.skill];
     if(!sk)return;
     // フラッシュ演出
-    setSubFlash(prev=>{const a=[...prev];a[slotIdx]=true;setTimeout(()=>setSubFlash(p=>{const b=[...p];b[slotIdx]=false;return b}),400);return a});
+    setSubFlash(prev=>{const a=[...prev];a[slotIdx]=true;setTimeout(()=>setSubFlash(p=>{const b=[...p];b[slotIdx]=false;return b}),400*sp);return a});
     // ゲージリセット
     R.current.gauges[slotIdx]=0;
     setSubGauges([...R.current.gauges]);
@@ -2454,8 +2454,8 @@ function QuestScreen({s,d}){
       en.hp=Math.max(0,en.hp-dmg);
       if(en.hp<=0)en.alive=false;
       setEnemies([...R.current.enemies]);
-      setShakeE(true);setTimeout(()=>setShakeE(false),300);
-      setDmg({v:dmg,crit:false,who:'e',eIdx:idx});setTimeout(()=>setDmg(null),500);
+      setShakeE(true);setTimeout(()=>setShakeE(false),300*sp);
+      setDmg({v:dmg,crit:false,who:'e',eIdx:idx});setTimeout(()=>setDmg(null),500*sp);
       setLog(p=>[...p.slice(-6),<span key={Date.now()+'_sk'}>{sk.icon} <b style={{color:sk.col}}>{sk.name}</b>{sm.skillLv>1?<sup style={{color:'#ffd700',fontSize:8}}>Lv{sm.skillLv}</sup>:''}！ {en.name} -{dmg}</span>]);
     } else if(sk.type==='aoe'){
       const sSt=calcStats(sm,s.equipInventory,s.facilities);
@@ -2469,7 +2469,7 @@ function QuestScreen({s,d}){
         totalDmg+=dmg;
       });
       setEnemies([...R.current.enemies]);
-      setShakeE(true);setTimeout(()=>setShakeE(false),300);
+      setShakeE(true);setTimeout(()=>setShakeE(false),300*sp);
       setLog(p=>[...p.slice(-6),<span key={Date.now()+'_sk'}>{sk.icon} <b style={{color:sk.col}}>{sk.name}</b>{sm.skillLv>1?<sup style={{color:'#ffd700',fontSize:8}}>Lv{sm.skillLv}</sup>:''}！ 全敵に計-{totalDmg}</span>]);
     } else if(sk.type==='heal'){
       const heal=Math.floor(stats.maxHp*skVal);
@@ -2498,8 +2498,8 @@ function QuestScreen({s,d}){
       const nh=Math.min(stats.maxHp,R.current.monHp+heal);
       R.current.monHp=nh;setMonHp(nh);
       setEnemies([...R.current.enemies]);
-      setShakeE(true);setTimeout(()=>setShakeE(false),300);
-      setDmg({v:dmg,crit:false,who:'e',eIdx:idx});setTimeout(()=>setDmg(null),500);
+      setShakeE(true);setTimeout(()=>setShakeE(false),300*sp);
+      setDmg({v:dmg,crit:false,who:'e',eIdx:idx});setTimeout(()=>setDmg(null),500*sp);
       setLog(p=>[...p.slice(-6),<span key={Date.now()+'_sk'}>{sk.icon} <b style={{color:sk.col}}>{sk.name}</b>！ -{dmg} HP吸収+{heal}</span>]);
     }
   }
@@ -2631,8 +2631,8 @@ function QuestScreen({s,d}){
     if(en.hp<=0)en.alive=false;
     setEnemies([...R.current.enemies]);
     R.current.cphase='enemy';setCphase('enemy');
-    setShakeE(true);setTimeout(()=>setShakeE(false),300);
-    setDmg({v:pdmg,crit,who:'e',eIdx:idx});setTimeout(()=>setDmg(null),500);
+    setShakeE(true);setTimeout(()=>setShakeE(false),300*sp);
+    setDmg({v:pdmg,crit,who:'e',eIdx:idx});setTimeout(()=>setDmg(null),500*sp);
     setLog(p=>[...p.slice(-6),crit?`✨ CRIT ${pdmg}!`:`${pm.name} → ${en.name} ${pdmg}dmg`]);
     // メイン攻撃でサブゲージを少し加算（援護でリズムよく）
     R.current.gauges=R.current.gauges.map(g=>Math.min(1,g+0.08));
@@ -2654,8 +2654,8 @@ function QuestScreen({s,d}){
       R.current.buffDef=1; // 一度きり
       const nm=Math.max(0,R.current.monHp-edmg);
       R.current.monHp=nm;setMonHp(nm);
-      setShakeM(true);setTimeout(()=>setShakeM(false),300);
-      setDmg({v:edmg,crit:false,who:'m'});setTimeout(()=>setDmg(null),500);
+      setShakeM(true);setTimeout(()=>setShakeM(false),300*sp);
+      setDmg({v:edmg,crit:false,who:'m'});setTimeout(()=>setDmg(null),500*sp);
       setLog(p=>[...p.slice(-6),`${attacker.name} → ${pm.name} ${edmg}dmg`]);
       // 被弾でスキルゲージを大きく加算（怒りゲージ風）
       R.current.gauges=R.current.gauges.map(g=>Math.min(1,g+0.18));
@@ -2668,7 +2668,7 @@ function QuestScreen({s,d}){
   // Auto-battle driver
   useEffect(()=>{
     if(!auto||cphase!=='ready'||phase!=='quest')return;
-    const t=setTimeout(doAttack,320);
+    const t=setTimeout(doAttack,320*sp);
     return()=>clearTimeout(t);
   },[auto,cphase,phase]);
 
