@@ -2300,8 +2300,9 @@ function QuestScreen({s,d}){
   const [auto,setAuto]=useState(true); // デフォルトON
   const battleSpeed=Math.max(1, s.settings?.battleSpeed||1); // 1x/2x/3x
   const sp=1/battleSpeed; // 時間倍率（速度2倍なら待ち時間1/2）
-  // オート周回（10連）
-  const [autoLoop,setAutoLoop]=useState(0); // 残り周回数（0=オートOFF）
+  // オート周回（クエスト選択時に設定）
+  // loopMode: 'off'(単発) | '10'(10連) | '50'(50連) | 'inf'(無限)
+  const [loopMode,setLoopMode]=useState('off');
   const [loopStats,setLoopStats]=useState(null); // 周回中の累計統計
   const [subGauges,setSubGauges]=useState([0,0,0,0]);
   const [subFlash,setSubFlash]=useState([false,false,false,false]);
@@ -2343,10 +2344,10 @@ function QuestScreen({s,d}){
     return arr;
   }
 
-  // オート周回の自動継続: 完了画面到達時、残り周回数があれば自動で次へ
+  // オート周回の自動継続: 完了画面到達時、target未達なら自動で次へ
   useEffect(()=>{
-    if(phase!=='complete'||autoLoop<=0||!loopStats)return;
-    const cq=QUESTS[qKey];if(!cq){setAutoLoop(0);setLoopStats(null);return;}
+    if(phase!=='complete'||!loopStats||!loopStats.target)return;
+    const cq=QUESTS[qKey];if(!cq){setLoopStats(null);return;}
     // 統計に今回分を加算
     const newStats={
       ...loopStats,
@@ -2361,14 +2362,21 @@ function QuestScreen({s,d}){
         return o;
       })(),
     };
+    // 目標到達チェック（無限なら永遠にfalse）
+    const targetReached=newStats.target!==Infinity && newStats.runs>=newStats.target;
+    if(targetReached){
+      // 目標達成 → 停止
+      d({type:'QUEST_COMPLETE',loot:R.current.loot,xp:R.current.xp,gold:R.current.gold||0,keyDrops:R.current.keyDrops||0,equipDrops:R.current.equipDrops||[],questKey:qKey});
+      setLoopStats({...newStats,target:null,stoppedReason:'目標達成'});
+      return;
+    }
     // 修行は鍵チェック
     if(cq.kind==='training'){
       const cost=cq.keyCost||1;
       if((s.keys||0)<cost){
         // 鍵不足で停止
         d({type:'QUEST_COMPLETE',loot:R.current.loot,xp:R.current.xp,gold:R.current.gold||0,keyDrops:R.current.keyDrops||0,equipDrops:R.current.equipDrops||[],questKey:qKey});
-        setLoopStats({...newStats,stoppedReason:'鍵不足'});
-        setAutoLoop(0);
+        setLoopStats({...newStats,target:null,stoppedReason:'鍵不足'});
         return;
       }
       d({type:'USE_KEYS',n:cost});
@@ -2377,17 +2385,15 @@ function QuestScreen({s,d}){
     const tid=setTimeout(()=>{
       d({type:'QUEST_COMPLETE',loot:R.current.loot,xp:R.current.xp,gold:R.current.gold||0,keyDrops:R.current.keyDrops||0,equipDrops:R.current.equipDrops||[],questKey:qKey});
       setLoopStats(newStats);
-      setAutoLoop(n=>n-1);
       startQuest(qKey);
     }, 600);
     return ()=>clearTimeout(tid);
-  },[phase,autoLoop]);
+  },[phase,loopStats?.target]);
 
   // 失敗時はオート周回を中断
   useEffect(()=>{
-    if(phase==='fail'&&autoLoop>0){
-      setAutoLoop(0);
-      setLoopStats(prev=>prev?{...prev,stoppedReason:'戦闘不能'}:null);
+    if(phase==='fail'&&loopStats?.target){
+      setLoopStats(prev=>prev?{...prev,target:null,stoppedReason:'戦闘不能'}:null);
     }
   },[phase]);
 
@@ -2401,6 +2407,11 @@ function QuestScreen({s,d}){
     setLog([`${pm.name}が${QUESTS[key].name}へ出発！`]);
     setSubGauges([0,0,0,0]);setSubFlash([false,false,false,false]);
     setPhase('quest');setCphase('ready');setDmg(null);
+    // オート周回が未開始の場合、loopMode設定に従って初期化
+    if(loopMode!=='off' && !loopStats?.target){
+      const target = loopMode==='inf' ? Infinity : parseInt(loopMode,10);
+      setLoopStats({runs:0,target,xpTotal:0,goldTotal:0,keysTotal:0,equipsTotal:0,lootTotal:{},startedKey:key});
+    }
     processNodeFn(key,0,hp,[]);
   }
 
@@ -2682,6 +2693,21 @@ function QuestScreen({s,d}){
       <div style={{fontSize:17,fontWeight:900}}>⚔ 素材クエスト</div>
       <div style={{fontSize:11,opacity:0.55,marginTop:2}}>冒険して素材を集め、お店で売ろう</div>
     </div>
+
+    {/* オート周回モード設定 */}
+    <div style={{...CARD,marginBottom:12,padding:'10px 12px',background:'linear-gradient(135deg,rgba(66,165,245,0.08),rgba(102,187,106,0.04))',border:`1px solid ${loopMode==='off'?'rgba(255,255,255,0.1)':'#42a5f566'}`}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:7}}>
+        <div style={{fontSize:11,fontWeight:900,color:loopMode==='off'?'rgba(255,255,255,0.7)':'#42a5f5'}}>🔄 オート周回モード</div>
+        <div style={{fontSize:9,opacity:0.55}}>{loopMode==='off'?'通常プレイ':loopMode==='inf'?'∞ 停止まで永遠':loopMode+'回繰り返し'}</div>
+      </div>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:4}}>
+        {[['off','OFF'],['10','10連'],['50','50連'],['inf','∞ 無限']].map(([k,l])=>(
+          <button key={k} onClick={()=>setLoopMode(k)} style={{...FF,padding:'7px 0',borderRadius:9,border:`1px solid ${loopMode===k?'#42a5f5':'rgba(255,255,255,0.12)'}`,background:loopMode===k?'rgba(66,165,245,0.22)':'rgba(255,255,255,0.04)',color:loopMode===k?'#42a5f5':'rgba(255,255,255,0.55)',cursor:'pointer',fontSize:10,fontWeight:900}}>{l}</button>
+        ))}
+      </div>
+      {loopMode!=='off'&&<div style={{fontSize:9,opacity:0.6,marginTop:6,lineHeight:1.5}}>クエスト開始後、{loopMode==='inf'?'停止ボタンを押すまで永遠に':'目標回数まで'}自動で周回します。戦闘不能・鍵不足で自動中断。</div>}
+    </div>
+
     <div style={{display:'flex',flexDirection:'column',gap:10}}>
       <div style={{display:'flex',gap:8,marginBottom:12}}>
         <button onClick={()=>setQuestTab('story')} style={{flex:1,padding:'10px',borderRadius:12,border:'none',cursor:'pointer',fontWeight:900,fontSize:13,background:questTab==='story'?'linear-gradient(135deg,#ff80ab,#ad1457)':'rgba(255,255,255,0.08)',color:'#fff'}}>📖 ストーリー</button>
@@ -2799,7 +2825,7 @@ function QuestScreen({s,d}){
 
   if(phase==='complete'||phase==='fail') return <div style={{width:'100%',padding:14,animation:'fadeIn 0.4s ease-out',textAlign:'center'}}>
     {/* オート周回サマリー（周回終了後、自動継続中はスキップ） */}
-    {loopStats&&autoLoop===0&&<div style={{...CARD,marginBottom:14,background:'linear-gradient(135deg,rgba(66,165,245,0.12),rgba(102,187,106,0.08))',border:'1px solid #42a5f5',padding:14}}>
+    {loopStats&&!loopStats.target&&<div style={{...CARD,marginBottom:14,background:'linear-gradient(135deg,rgba(66,165,245,0.12),rgba(102,187,106,0.08))',border:'1px solid #42a5f5',padding:14}}>
       <div style={{fontSize:13,fontWeight:900,color:'#42a5f5',marginBottom:6}}>🔄 オート周回 終了</div>
       <div style={{fontSize:10,opacity:0.75,marginBottom:8}}>{loopStats.runs}回完了{loopStats.stoppedReason?`（${loopStats.stoppedReason}で中断）`:''}</div>
       <div style={{display:'flex',justifyContent:'space-around',gap:8,marginBottom:6}}>
@@ -2855,33 +2881,11 @@ function QuestScreen({s,d}){
           }
           if(targetKey){startQuest(targetKey);}else{setPhase('select');setQKey(null);setLoopStats(null);}
         };
-        // 10連オート開始: 同じクエストを最大10回連続実行
-        const startAutoLoop=()=>{
-          // ストーリーの初回クリア時など、wasClearedでない場合も同クエストを周回したいので許可
-          const initStats={runs:0,maxRuns:10,xpTotal:R.current.xp||0,goldTotal:R.current.gold||0,keysTotal:R.current.keyDrops||0,equipsTotal:(R.current.equipDrops||[]).length,lootTotal:{...(()=>{const o={};(R.current.loot||[]).forEach(k=>o[k]=(o[k]||0)+1);return o;})()},startedKey:qKey};
-          initStats.runs=1;
-          setLoopStats(initStats);
-          setAutoLoop(9); // 残り9周回
-          // 修行の場合、鍵を消費して継続
-          if(cq?.kind==='training'){
-            const cost=cq.keyCost||1;
-            if((s.keys||0)<cost){
-              // 鍵不足で開始不可
-              d({type:'QUEST_COMPLETE',loot:R.current.loot,xp:R.current.xp,gold:R.current.gold||0,keyDrops:R.current.keyDrops||0,equipDrops:R.current.equipDrops||[],questKey:qKey});
-              setPhase('select');setQKey(null);setAutoLoop(0);setLoopStats(null);
-              return;
-            }
-            d({type:'USE_KEYS',n:cost});
-          }
-          d({type:'QUEST_COMPLETE',loot:R.current.loot,xp:R.current.xp,gold:R.current.gold||0,keyDrops:R.current.keyDrops||0,equipDrops:R.current.equipDrops||[],questKey:qKey});
-          startQuest(qKey);
-        };
         return <>
           {nextKey&&<Btn onClick={()=>commitAndGo(nextKey)} color='linear-gradient(135deg,#ff9800,#e65100)'>▶ 次のクエストへ</Btn>}
           {/* 周回ボタン: クリア済みクエストのみ表示 */}
           {wasCleared&&!nextKey&&<Btn onClick={()=>commitAndGo(qKey)} color='linear-gradient(135deg,#ff9800,#e65100)'>🔁 もう一度</Btn>}
           {wasCleared&&nextKey&&<Btn onClick={()=>commitAndGo(qKey)} color='rgba(255,152,0,0.5)'>🔁 もう一度</Btn>}
-          {wasCleared&&<Btn onClick={startAutoLoop} color='linear-gradient(135deg,#42a5f5,#1976d2)'>🔄 10連オート</Btn>}
           <Btn onClick={()=>commitAndGo(null)} color='linear-gradient(135deg,#66bb6a,#2e7d32)'>✅ 受け取って戻る</Btn>
         </>;
       })()}
@@ -2892,15 +2896,19 @@ function QuestScreen({s,d}){
 
   return <div style={{width:'100%',padding:12,animation:'fadeIn 0.4s ease-out'}}>
     {/* オート周回中バナー */}
-    {autoLoop>0&&loopStats&&<div style={{...CARD,marginBottom:8,padding:'7px 10px',background:'linear-gradient(135deg,rgba(66,165,245,0.15),rgba(102,187,106,0.10))',border:'1px solid #42a5f5',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+    {loopStats?.target&&<div style={{...CARD,marginBottom:8,padding:'7px 10px',background:'linear-gradient(135deg,rgba(66,165,245,0.15),rgba(102,187,106,0.10))',border:'1px solid #42a5f5',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
       <div style={{display:'flex',alignItems:'center',gap:6}}>
         <span style={{fontSize:14}}>🔄</span>
         <div>
           <div style={{fontSize:10,fontWeight:900,color:'#42a5f5'}}>オート周回中</div>
-          <div style={{fontSize:9,opacity:0.7}}>{loopStats.runs}回目 / 残り{autoLoop}回</div>
+          <div style={{fontSize:9,opacity:0.7}}>
+            {loopStats.target===Infinity
+              ?`${loopStats.runs+1}回目（∞ 無限）`
+              :`${loopStats.runs+1}回目 / 残り${loopStats.target-loopStats.runs}回`}
+          </div>
         </div>
       </div>
-      <button onClick={()=>{setAutoLoop(0);setLoopStats(prev=>prev?{...prev,stoppedReason:'手動停止'}:null);}} style={{...FF,padding:'4px 10px',borderRadius:8,border:'1px solid #ef5350',background:'rgba(239,83,80,0.1)',color:'#ef5350',cursor:'pointer',fontSize:10,fontWeight:900}}>⏹ 停止</button>
+      <button onClick={()=>{setLoopStats(prev=>prev?{...prev,target:null,stoppedReason:'手動停止'}:null);}} style={{...FF,padding:'4px 10px',borderRadius:8,border:'1px solid #ef5350',background:'rgba(239,83,80,0.1)',color:'#ef5350',cursor:'pointer',fontSize:10,fontWeight:900}}>⏹ 停止</button>
     </div>}
 
     {/* Top bar: progress + auto toggle */}
