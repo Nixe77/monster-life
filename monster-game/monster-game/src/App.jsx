@@ -467,6 +467,9 @@ const EQUIP_DROP_NORMAL={C:0.08,R:0.04,SR:0.015,UR:0.005,LR:0.001};
 // ボスはレア装備重視（合計約 27%）
 const EQUIP_DROP_BOSS={C:0.10,R:0.08,SR:0.06,UR:0.025,LR:0.005};
 const ITEMS={
+  // 成長専用素材（覚醒/スキル強化）
+  awaken_soul:  {name:'たましいのかけら',icon:'💠',basePrice:0},
+  skill_stone:  {name:'スキルのいし',     icon:'📜',basePrice:0},
   ancient_coin: {name:'こだいコイン',     icon:'🪙',basePrice:47},
   star_fragment:{name:'ほしのかけら',     icon:'💫',basePrice:36},
   elixir:       {name:'エリクサー',       icon:'✨',basePrice:121},
@@ -793,11 +796,13 @@ const QUESTS={
 };
 
 // ─── STAT CALCULATION ────────────────────────────────────
-function calcStats(m, equipInventory){
+function calcStats(m, equipInventory, facilities){
   const b=BASE_STATS[m.type];if(!b)return{maxHp:50,hp:50,atk:8,def:5,spd:8,luk:8};
-  const lm=1+(m.level-1)*0.09;const bm=1+m.lb*0.12;
+  const lm=1+(m.level-1)*0.09;
+  const bm=1+(m.lb||0)*0.12;
+  const am=1+(m.awaken||0)*0.18; // 覚醒1段で+18%
+  const mult=lm*bm*am;
   let atk=0,def=0,spd=0,luk=0;
-  // m.equip は {hat,acc,wpn} の各値が装備ID。equipInventoryから実体取得してステータス加算
   Object.values(m.equip||{}).forEach(id=>{
     if(!id)return;
     const eq=findEq(equipInventory,id);
@@ -805,17 +810,20 @@ function calcStats(m, equipInventory){
     const s=eqStats(eq);
     atk+=s.atk;def+=s.def;spd+=s.spd;luk+=s.luk;
   });
+  // 施設ボーナス（全モンスター共通の乗算）
+  const fac=facilities||{};
+  const fAtk=facBonus(fac,'atk'), fDef=facBonus(fac,'def'), fSpd=facBonus(fac,'spd'), fLuk=facBonus(fac,'luk'), fHp=facBonus(fac,'hp');
   return{
-    maxHp:Math.ceil(b.hp*lm*bm),
-    atk:Math.ceil(b.atk*lm*bm)+atk,
-    def:Math.ceil(b.def*lm*bm)+def,
-    spd:Math.ceil(b.spd*lm*bm)+spd,
-    luk:Math.ceil(b.luk*lm*bm)+luk,
+    maxHp:Math.ceil(b.hp*mult*fHp),
+    atk:Math.ceil((b.atk*mult+atk)*fAtk),
+    def:Math.ceil((b.def*mult+def)*fDef),
+    spd:Math.ceil((b.spd*mult+spd)*fSpd),
+    luk:Math.ceil((b.luk*mult+luk)*fLuk),
   };
 }
 
 // ─── GLOBAL REDUCER ──────────────────────────────────────
-const mkMon=(type,id)=>({id,type,name:`${MONS[type]?.name||type}${Math.floor(Math.random()*999)+1}`,level:1,xp:0,lb:0,rarity:MONS[type]?.rarity||'C',equip:{hat:null,acc:null,wpn:null}});
+const mkMon=(type,id)=>({id,type,name:`${MONS[type]?.name||type}${Math.floor(Math.random()*999)+1}`,level:1,xp:0,lb:0,awaken:0,skillLv:1,rarity:MONS[type]?.rarity||'C',equip:{hat:null,acc:null,wpn:null}});
 const SAVE_KEY='mlg_save_v7'; // パーティー制（メイン+サブ4体）導入のためバンプ
 // 初期装備3個（毎回新ID生成）
 const _initialEquip = () => [
@@ -850,6 +858,8 @@ function migrateSave(p){
       level:m.level||1,
       xp:m.xp||0,
       lb:m.lb||0,
+      awaken:m.awaken||0,
+      skillLv:m.skillLv||1,
       rarity:m.rarity&&RO.includes(m.rarity)?m.rarity:MONS[m.type].rarity,
       // 後でinventory反映後に再度フィルタするため、ここでは生のままコピー
       equip:{hat:m.equip?.hat||null, acc:m.equip?.acc||null, wpn:m.equip?.wpn||null},
@@ -978,7 +988,65 @@ const INIT=()=>{
   }catch(e){console.warn('セーブデータ読み込み失敗、初期化します',e);}
   return{...DEFAULT_STATE};
 };
-function addXP(m,xp){const nx=m.xp+xp;const lu=nx>=100*(m.level);return lu?{...m,xp:0,level:m.level+1}:{...m,xp:nx};}
+// ─── FACILITIES (訓練施設) ────────────────────────────────
+// 各施設はLv1〜10、レベルごとに効果UP & 建設/Lv上げコストUP
+// effect: 'atk'/'def'/'spd'/'luk'/'hp'/'trainXp'
+const FACILITIES={
+  atk_dojo:  {name:'攻撃の道場',  icon:'⚔', effect:'atk', perLv:0.04, base:500, desc:'全モンスターのATK+%'},
+  def_dojo:  {name:'守りの道場',  icon:'🛡', effect:'def', perLv:0.04, base:500, desc:'全モンスターのDEF+%'},
+  spd_dojo:  {name:'俊敏の道場',  icon:'🌪', effect:'spd', perLv:0.04, base:450, desc:'全モンスターのSPD+%'},
+  luk_dojo:  {name:'幸運の神殿',  icon:'🍀', effect:'luk', perLv:0.04, base:550, desc:'全モンスターのLUK+%'},
+  hp_inn:    {name:'療養所',      icon:'💚', effect:'hp',  perLv:0.05, base:600, desc:'全モンスターのHP+%'},
+  training:  {name:'訓練場',      icon:'🏋', effect:'trainXp', perLv:1, base:800, desc:'モンスター1体にXP付与（コイン消費）'},
+  bazaar:    {name:'雑貨商',      icon:'🏪', effect:'shop',    perLv:1, base:500, desc:'素材ガチャ割引・自動出品・出品中ドロップ率UP'},
+};
+function facLvCost(facKey, curLv){
+  // 建設: base / Lv上げ: base * (curLv+1)^1.6
+  const f=FACILITIES[facKey]; if(!f) return 99999;
+  if(curLv===0) return f.base;
+  return Math.floor(f.base * Math.pow(curLv+1, 1.6));
+}
+function facBonus(facilities, effect){
+  // 該当 effect の施設Lv合計 × perLv = 倍率（×1.04 など）
+  let total=0;
+  Object.entries(facilities||{}).forEach(([k,v])=>{
+    if(FACILITIES[k]?.effect===effect && v?.lv>0) total += v.lv * FACILITIES[k].perLv;
+  });
+  return 1+total;
+}
+
+// ─── 素材ガチャ排出テーブル ───────────────────────────────
+// rate合計が確率分母（100=パーセント表記）
+const MATERIAL_GACHA_POOL=[
+  {item:'skill_stone',qty:1, rate:50, rarity:'C',  label:'スキル石 ×1'},
+  {item:'skill_stone',qty:3, rate:20, rarity:'R',  label:'スキル石 ×3'},
+  {item:'awaken_soul',qty:1, rate:14, rarity:'R',  label:'たましいのかけら ×1'},
+  {item:'skill_stone',qty:5, rate:7,  rarity:'SR', label:'スキル石 ×5'},
+  {item:'awaken_soul',qty:2, rate:5,  rarity:'SR', label:'たましいのかけら ×2'},
+  {item:'skill_stone',qty:12,rate:2,  rarity:'UR', label:'スキル石 ×12'},
+  {item:'awaken_soul',qty:5, rate:1.5,rarity:'UR', label:'たましいのかけら ×5'},
+  {item:'awaken_soul',qty:10,rate:0.5,rarity:'LR', label:'たましいのかけら ×10 ⭐'},
+];
+function rollMaterialGacha(){
+  // rate合計から重み付き抽選
+  const total=MATERIAL_GACHA_POOL.reduce((a,p)=>a+p.rate,0);
+  let r=Math.random()*total;
+  for(const p of MATERIAL_GACHA_POOL){
+    r-=p.rate;
+    if(r<=0)return p;
+  }
+  return MATERIAL_GACHA_POOL[0];
+}
+
+// ─── XP/レベルカーブ ──────────────────────────────────────
+function xpForLevel(lv){return 100*lv;} // Lv n の必要XP
+// 連続レベルアップ対応：与えられたXPで複数レベル分上がる
+function addXP(m,xp){
+  if(!m||xp<=0)return m;
+  let nl=m.level||1, nx=(m.xp||0)+xp;
+  while(nx>=xpForLevel(nl)){nx-=xpForLevel(nl);nl++;if(nl>=999)break;}
+  return{...m,level:nl,xp:nx};
+}
 function reducer(s,a){
   switch(a.type){
     case 'SCREEN':return{...s,screen:a.v};
@@ -986,7 +1054,14 @@ function reducer(s,a){
     case 'QUEST_COMPLETE':{
       const mat={...s.materials};
       a.loot.forEach(k=>{mat[k]=(mat[k]||0)+1});
-      const mons=s.monsters.map(m=>m.id===s.party.main?addXP(m,a.xp):m);
+      // メインに100% + サブ全員に30%ずつXPを配分
+      const subXp=Math.floor(a.xp*0.30);
+      const subIds=new Set((s.party.subs||[]).filter(Boolean));
+      const mons=s.monsters.map(m=>{
+        if(m.id===s.party.main)return addXP(m,a.xp);
+        if(subIds.has(m.id))return addXP(m,subXp);
+        return m;
+      });
       const pxp=Math.ceil(a.xp*0.6+(a.loot.length*8));
       const goldGain=a.gold||0;
       const keyGain=a.keyDrops||0;
@@ -994,8 +1069,33 @@ function reducer(s,a){
       const cleared={...s.clearedQuests,[a.questKey]:true};
       const lootMsg=a.loot.map(k=>ITEMS[k]?.name).filter(Boolean).join('・');
       const eqMsg=eqDrops.length?` 装備×${eqDrops.length}！`:'';
-      const toast=`クエスト完了！ ${lootMsg}${goldGain?` +${goldGain}🪙`:''}${keyGain?` 🗝×${keyGain}`:''}${eqMsg}`;
-      const base={...s,materials:mat,monsters:mons,coins:s.coins+goldGain,keys:(s.keys||0)+keyGain,equipInventory:[...s.equipInventory,...eqDrops],clearedQuests:cleared,toast};
+      const subMsg=subIds.size>0?` サブ${subIds.size}体に+${subXp}XP`:'';
+      // 自動出品: 雑貨商Lv2以上＆autoList=ON時、新規入手アイテムのうち basePrice>0 を自動出品リストに追加
+      let newListings=s.shop.listings;
+      let autoListMsg='';
+      if((s.facilities.bazaar?.lv||0)>=2 && s.shop.autoList){
+        const newKeys=new Set(a.loot.filter(k=>ITEMS[k]?.basePrice>0));
+        if(newKeys.size>0){
+          const listMap=new Map(newListings.map(l=>[l.itemKey,l]));
+          newKeys.forEach(k=>{
+            const qty=mat[k]||0;
+            if(qty>0){
+              listMap.set(k,{itemKey:k,qty,price:ITEMS[k].basePrice});
+            }
+          });
+          // 既存出品も最新の所持数に合わせて更新（成長素材は除外しつつ）
+          newListings=Array.from(listMap.values()).filter(l=>{
+            const it=ITEMS[l.itemKey];
+            if(!it||it.basePrice<=0)return false;
+            const have=mat[l.itemKey]||0;
+            l.qty=have;
+            return have>0;
+          });
+          autoListMsg=' 🏪 自動出品';
+        }
+      }
+      const toast=`クエスト完了！ ${lootMsg}${goldGain?` +${goldGain}🪙`:''}${keyGain?` 🗝×${keyGain}`:''}${eqMsg}${subMsg}${autoListMsg}`;
+      const base={...s,materials:mat,monsters:mons,coins:s.coins+goldGain,keys:(s.keys||0)+keyGain,equipInventory:[...s.equipInventory,...eqDrops],clearedQuests:cleared,shop:{...s.shop,listings:newListings},toast};
       return addPlayerXP(base,pxp);
     }
     case 'SHOP_SET_LISTING':{
@@ -1076,6 +1176,114 @@ function reducer(s,a){
       const rarUp=newRar!==curRar?` ${curRar}→${newRar}！`:'';
       return{...s,equipInventory:newInv,monsters:newMonsters,toast:`${defEq.name} +${newLb} Lv${newLv}${rarUp}`};
     }
+    case 'AWAKEN':{
+      // 覚醒: lb=5かつ覚醒<5の時に たましいのかけら×N消費 + ゴールド消費で覚醒+1
+      const {mId}=a;
+      const m=s.monsters.find(mm=>mm.id===mId);if(!m)return s;
+      if((m.lb||0)<5)return{...s,toast:'限界突破★5でないと覚醒できません'};
+      const aw=m.awaken||0;
+      if(aw>=5)return{...s,toast:'覚醒★5（最大）に達しています'};
+      const soulCost=3+aw*2; // 3,5,7,9,11
+      const goldCost=5000*(aw+1); // 5k,10k,15k,20k,25k
+      if((s.materials.awaken_soul||0)<soulCost)return{...s,toast:`たましいのかけら×${soulCost}必要`};
+      if(s.coins<goldCost)return{...s,toast:`${goldCost}🪙必要`};
+      const mat={...s.materials,awaken_soul:s.materials.awaken_soul-soulCost};
+      const mons=s.monsters.map(mm=>mm.id===mId?{...mm,awaken:aw+1}:mm);
+      return{...s,materials:mat,coins:s.coins-goldCost,monsters:mons,toast:`🌟 覚醒★${aw+1}達成！ +18%`};
+    }
+    case 'SKILL_UP':{
+      // スキル強化: スキルのいし×N + ゴールドでスキルLv+1 (最大Lv5、各+12%威力)
+      const {mId}=a;
+      const m=s.monsters.find(mm=>mm.id===mId);if(!m)return s;
+      const sl=m.skillLv||1;
+      if(sl>=5)return{...s,toast:'スキルLv5（最大）に達しています'};
+      const stoneCost=2+sl; // 3,4,5,6
+      const goldCost=800*sl; // 800,1600,2400,3200
+      if((s.materials.skill_stone||0)<stoneCost)return{...s,toast:`スキルのいし×${stoneCost}必要`};
+      if(s.coins<goldCost)return{...s,toast:`${goldCost}🪙必要`};
+      const mat={...s.materials,skill_stone:s.materials.skill_stone-stoneCost};
+      const mons=s.monsters.map(mm=>mm.id===mId?{...mm,skillLv:sl+1}:mm);
+      return{...s,materials:mat,coins:s.coins-goldCost,monsters:mons,toast:`⚡ スキルLv${sl+1}！威力UP`};
+    }
+    case 'SKILL_UP_MAX':{
+      // 一括強化: 素材・コインが許す限りLv5まで連続強化
+      const {mId}=a;
+      const m=s.monsters.find(mm=>mm.id===mId);if(!m)return s;
+      let sl=m.skillLv||1;
+      if(sl>=5)return{...s,toast:'スキルLv5（最大）に達しています'};
+      let stone=s.materials.skill_stone||0;
+      let coin=s.coins;
+      let totalStone=0,totalGold=0,steps=0;
+      while(sl<5){
+        const stoneCost=2+sl;
+        const goldCost=800*sl;
+        if(stone<stoneCost||coin<goldCost)break;
+        stone-=stoneCost;coin-=goldCost;
+        totalStone+=stoneCost;totalGold+=goldCost;
+        sl++;steps++;
+      }
+      if(steps===0)return{...s,toast:'素材/コインが不足しています'};
+      const mat={...s.materials,skill_stone:stone};
+      const mons=s.monsters.map(mm=>mm.id===mId?{...mm,skillLv:sl}:mm);
+      return{...s,materials:mat,coins:coin,monsters:mons,toast:`⚡ ${steps}段階アップ！ Lv${sl} (📜-${totalStone}/💰-${totalGold})`};
+    }
+    case 'AWAKEN_MAX':{
+      // 一括覚醒: 素材・コインが許す限り★5まで連続覚醒
+      const {mId}=a;
+      const m=s.monsters.find(mm=>mm.id===mId);if(!m)return s;
+      if((m.lb||0)<5)return{...s,toast:'限界突破★5でないと覚醒できません'};
+      let aw=m.awaken||0;
+      if(aw>=5)return{...s,toast:'覚醒★5（最大）に達しています'};
+      let soul=s.materials.awaken_soul||0;
+      let coin=s.coins;
+      let totalSoul=0,totalGold=0,steps=0;
+      while(aw<5){
+        const soulCost=3+aw*2;
+        const goldCost=5000*(aw+1);
+        if(soul<soulCost||coin<goldCost)break;
+        soul-=soulCost;coin-=goldCost;
+        totalSoul+=soulCost;totalGold+=goldCost;
+        aw++;steps++;
+      }
+      if(steps===0)return{...s,toast:'素材/コインが不足しています'};
+      const mat={...s.materials,awaken_soul:soul};
+      const mons=s.monsters.map(mm=>mm.id===mId?{...mm,awaken:aw}:mm);
+      return{...s,materials:mat,coins:coin,monsters:mons,toast:`🌟 ${steps}段階覚醒！ ★${aw} (💠-${totalSoul}/💰-${totalGold})`};
+    }
+    case 'FACILITY_BUILD':{
+      // 施設建設・レベルアップ
+      const {facKey}=a;
+      const f=FACILITIES[facKey];if(!f)return{...s,toast:'施設が見つかりません'};
+      const cur=s.facilities[facKey]?.lv||0;
+      if(cur>=10)return{...s,toast:'Lv10（最大）に達しています'};
+      const cost=facLvCost(facKey,cur);
+      if(s.coins<cost)return{...s,toast:`${cost}🪙必要（不足）`};
+      const newLv=cur+1;
+      const facilities={...s.facilities,[facKey]:{lv:newLv}};
+      return{...s,coins:s.coins-cost,facilities,toast:`🏠 ${f.name} Lv${newLv}！`};
+    }
+    case 'FACILITY_TRAIN':{
+      // 訓練場: ゴールドを払って指定モンスターにXP付与
+      const {mId,amount}=a;
+      const m=s.monsters.find(mm=>mm.id===mId);if(!m)return s;
+      const facLv=s.facilities.training?.lv||0;
+      if(facLv<=0)return{...s,toast:'まず訓練場を建設してください'};
+      // amount: 'small' (100xLv) / 'mid' (500xLv) / 'big' (2000xLv)
+      const presets={small:{xp:100*facLv,gold:80*facLv},
+                     mid:  {xp:500*facLv,gold:380*facLv},
+                     big:  {xp:2000*facLv,gold:1400*facLv}};
+      const p=presets[amount]||presets.small;
+      if(s.coins<p.gold)return{...s,toast:`${p.gold}🪙必要`};
+      const mons=s.monsters.map(mm=>mm.id===mId?addXP(mm,p.xp):mm);
+      return{...s,coins:s.coins-p.gold,monsters:mons,toast:`🏋 ${m.name} +${p.xp}XP！`};
+    }
+    case 'TOGGLE_AUTO_LIST':{
+      // 自動出品ON/OFF切替（雑貨商Lv2以上で利用可）
+      const bzLv=s.facilities.bazaar?.lv||0;
+      if(bzLv<2)return{...s,toast:'雑貨商Lv2で解放されます'};
+      const cur=s.shop.autoList||false;
+      return{...s,shop:{...s.shop,autoList:!cur},toast:!cur?'⚡ 自動出品 ON':'自動出品 OFF'};
+    }
     case 'SET_PARTY':{
       // メインを変更。新メインが既にサブにいた場合はサブから外す
       const newMain=a.id;
@@ -1124,6 +1332,27 @@ function reducer(s,a){
     }
     case 'GACHA_NEXT':{if(!s.gacha)return s;const ni=s.gacha.idx+1;if(ni>=s.gacha.results.length)return{...s,gacha:null};return{...s,gacha:{...s.gacha,idx:ni}};}
     case 'GACHA_DONE':return{...s,gacha:null};
+    case 'MATERIAL_GACHA':{
+      // 素材ガチャ: n=1(単発) or n=10(10連、約10%割引)
+      const base=300;
+      const cost=a.n===10?Math.floor(base*10*0.9):base;
+      // 雑貨商Lvで追加割引（Lv1=0%, Lv10=最大20%）
+      const bzLv=s.facilities.bazaar?.lv||0;
+      const discount=Math.min(0.20, bzLv*0.022);
+      const finalCost=Math.floor(cost*(1-discount));
+      if(s.coins<finalCost)return{...s,toast:'コインが足りない！'};
+      // 抽選結果収集 + 素材を加算
+      const results=[];
+      const mat={...s.materials};
+      for(let i=0;i<a.n;i++){
+        const drop=rollMaterialGacha();
+        results.push(drop);
+        mat[drop.item]=(mat[drop.item]||0)+drop.qty;
+      }
+      return{...s,coins:s.coins-finalCost,materials:mat,matGacha:{results,idx:0}};
+    }
+    case 'MAT_GACHA_NEXT':{if(!s.matGacha)return s;const ni=s.matGacha.idx+1;if(ni>=s.matGacha.results.length)return{...s,matGacha:null};return{...s,matGacha:{...s.matGacha,idx:ni}};}
+    case 'MAT_GACHA_DONE':return{...s,matGacha:null};
     case 'FUSE':{
       const {id1,id2}=a;
       const m1=s.monsters.find(m=>m.id===id1);
@@ -1371,6 +1600,9 @@ function EquippedMonster({monster,size=80,anim='float'}){
 // ─── HOME SCREEN ─────────────────────────────────────────
 function HomeScreen({s,d}){
   const pm=s.monsters.find(m=>m.id===s.party.main)||s.monsters[0];
+  const [facOpen,setFacOpen]=useState(false); // 施設パネル開閉
+  const [trainOpen,setTrainOpen]=useState(false); // 訓練パネル
+  const [trainTarget,setTrainTarget]=useState(null); // 訓練対象モンスターID
   const cvRef=useRef(null);
   const npcsRef=useRef([]);
   const monsRef=useRef([]);
@@ -1677,7 +1909,7 @@ function HomeScreen({s,d}){
   },[]);
 
   if(!pm)return null;
-  const st=calcStats(pm, s.equipInventory);const mi=MONS[pm.type];
+  const st=calcStats(pm, s.equipInventory, s.facilities);const mi=MONS[pm.type];
   const STAT_DEFS=[['HP',st.maxHp,'#ef5350'],['ATK',st.atk,'#ff7043'],['DEF',st.def,'#42a5f5'],['SPD',st.spd,'#66bb6a'],['LUK',st.luk,'#ab47bc']];
   const MAX_S=120;
   const listedKeys=new Set(s.shop.listings.map(l=>l.itemKey));
@@ -1689,7 +1921,8 @@ function HomeScreen({s,d}){
     d({type:'SHOP_SET_LISTING',listings:newListings});
   }
   function listAll(){
-    const newListings=Object.entries(s.materials).filter(([,v])=>v>0).map(([k,qty])=>({itemKey:k,qty,price:ITEMS[k].basePrice}));
+    // 成長素材（basePrice=0）は除外して全出品
+    const newListings=Object.entries(s.materials).filter(([k,v])=>v>0&&ITEMS[k]?.basePrice>0).map(([k,qty])=>({itemKey:k,qty,price:ITEMS[k].basePrice}));
     d({type:'SHOP_SET_LISTING',listings:newListings});
   }
   function delistAll(){d({type:'SHOP_SET_LISTING',listings:[]});}
@@ -1714,6 +1947,93 @@ function HomeScreen({s,d}){
       </div>
     </div>
 
+    {/* 施設パネル（ホームに5種類の施設+訓練場） */}
+    <div style={{...CARD,marginBottom:10,padding:'10px 12px'}}>
+      <button onClick={()=>setFacOpen(o=>!o)} style={{...FF,width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',background:'none',border:'none',cursor:'pointer',color:'#fff',padding:0}}>
+        <div style={{fontSize:11,fontWeight:900}}>🏠 施設 <span style={{fontSize:9,opacity:0.6,fontWeight:400,marginLeft:6}}>全モンスター強化</span></div>
+        <div style={{fontSize:14,opacity:0.7,transform:facOpen?'rotate(90deg)':'rotate(0)',transition:'transform 0.2s'}}>▶</div>
+      </button>
+      {facOpen&&<div style={{marginTop:10,display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:6}}>
+        {Object.entries(FACILITIES).map(([fk,f])=>{
+          const lv=s.facilities[fk]?.lv||0;
+          const max=lv>=10;
+          const cost=facLvCost(fk,lv);
+          const canPay=s.coins>=cost;
+          const eff=Math.round(lv*f.perLv*100);
+          const isTraining=fk==='training';
+          const isBazaar=fk==='bazaar';
+          return <div key={fk} style={{...CARD,padding:'7px 8px',border:`1px solid ${lv>0?'#bf88ff44':'rgba(255,255,255,0.08)'}`,background:lv>0?'rgba(191,136,255,0.06)':undefined}}>
+            <div style={{display:'flex',alignItems:'center',gap:5}}>
+              <div style={{fontSize:18}}>{f.icon}</div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:10,fontWeight:900,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{f.name}</div>
+                <div style={{fontSize:8,opacity:0.6,marginTop:1}}>Lv{lv}/10{!isTraining&&` +${eff}%`}</div>
+              </div>
+            </div>
+            <div style={{fontSize:8,opacity:0.5,marginTop:3,height:18,lineHeight:1.3,overflow:'hidden'}}>{f.desc}</div>
+            <div style={{display:'flex',gap:4,marginTop:5}}>
+              {!max?<button onClick={()=>d({type:'FACILITY_BUILD',facKey:fk})} disabled={!canPay}
+                style={{...FF,flex:1,padding:'4px 0',borderRadius:8,border:'none',background:canPay?'linear-gradient(135deg,#bf40ff,#7c4dff)':'rgba(255,255,255,0.05)',color:canPay?'#fff':'rgba(255,255,255,0.3)',cursor:canPay?'pointer':'default',fontSize:9,fontWeight:900}}>
+                {lv===0?`建設 ${cost}🪙`:`+1 ${cost}🪙`}
+              </button>:<div style={{flex:1,padding:'4px 0',textAlign:'center',fontSize:9,color:'#ffd700',fontWeight:900}}>MAX</div>}
+              {isTraining&&lv>0&&<button onClick={()=>setTrainOpen(true)} style={{...FF,flex:1,padding:'4px 0',borderRadius:8,border:'1px solid #ffd70066',background:'rgba(255,215,0,0.1)',color:'#ffd700',cursor:'pointer',fontSize:9,fontWeight:900}}>訓練</button>}
+              {isBazaar&&lv>0&&<button onClick={()=>d({type:'SCREEN',v:'gacha'})} style={{...FF,flex:1,padding:'4px 0',borderRadius:8,border:'1px solid #66bb6a66',background:'rgba(102,187,106,0.1)',color:'#66bb6a',cursor:'pointer',fontSize:9,fontWeight:900}}>🎁 ガチャ</button>}
+            </div>
+          </div>;
+        })}
+      </div>}
+    </div>
+
+    {/* 訓練ポップアップ */}
+    {trainOpen&&<div onClick={()=>setTrainOpen(false)} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.7)',zIndex:1000,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
+      <div onClick={e=>e.stopPropagation()} style={{...CARD,maxWidth:380,width:'100%',maxHeight:'80vh',overflow:'auto',padding:14}}>
+        <div style={{fontSize:14,fontWeight:900,marginBottom:8}}>🏋 訓練場 Lv{s.facilities.training?.lv||0}</div>
+        <div style={{fontSize:10,opacity:0.6,marginBottom:10}}>ゴールド消費でモンスターにXP付与。施設Lvが高いほど効率UP</div>
+        {!trainTarget&&<>
+          <div style={{fontSize:10,opacity:0.6,marginBottom:6}}>1. 訓練するモンスターを選ぶ</div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:5,maxHeight:'40vh',overflow:'auto'}}>
+            {s.monsters.map(m=><button key={m.id} onClick={()=>setTrainTarget(m.id)} style={{...CARD,...FF,padding:'6px 4px',cursor:'pointer',textAlign:'center',border:'1px solid rgba(191,136,255,0.4)',background:'rgba(191,136,255,0.05)'}}>
+              <div style={{display:'flex',justifyContent:'center'}}><EquippedMonster monster={m} size={32}/></div>
+              <div style={{fontSize:9,fontWeight:900,marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{m.name}</div>
+              <div style={{fontSize:8,opacity:0.55}}>Lv{m.level}</div>
+            </button>)}
+          </div>
+        </>}
+        {trainTarget&&(()=>{
+          const m=s.monsters.find(mm=>mm.id===trainTarget);if(!m)return null;
+          const facLv=s.facilities.training?.lv||1;
+          const presets=[
+            {key:'small',label:'軽い訓練',xp:100*facLv,gold:80*facLv},
+            {key:'mid',  label:'集中訓練',xp:500*facLv,gold:380*facLv},
+            {key:'big',  label:'特訓',    xp:2000*facLv,gold:1400*facLv},
+          ];
+          return <>
+            <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:10,padding:8,background:'rgba(255,255,255,0.04)',borderRadius:10}}>
+              <EquippedMonster monster={m} size={48}/>
+              <div style={{flex:1}}>
+                <div style={{fontSize:12,fontWeight:900}}>{m.name}</div>
+                <div style={{fontSize:9,opacity:0.6}}>Lv{m.level}（XP {m.xp}/{xpForLevel(m.level)}）</div>
+              </div>
+              <button onClick={()=>setTrainTarget(null)} style={{...FF,padding:'4px 8px',background:'rgba(255,255,255,0.1)',border:'1px solid rgba(255,255,255,0.2)',borderRadius:8,cursor:'pointer',fontSize:9,color:'#fff'}}>変更</button>
+            </div>
+            <div style={{display:'flex',flexDirection:'column',gap:6}}>
+              {presets.map(p=><button key={p.key} onClick={()=>d({type:'FACILITY_TRAIN',mId:m.id,amount:p.key})} disabled={s.coins<p.gold}
+                style={{...CARD,...FF,padding:'8px 12px',cursor:s.coins>=p.gold?'pointer':'default',display:'flex',justifyContent:'space-between',alignItems:'center',border:`1px solid ${s.coins>=p.gold?'#ffd70066':'rgba(255,255,255,0.1)'}`,background:s.coins>=p.gold?'rgba(255,215,0,0.06)':'rgba(255,255,255,0.02)',opacity:s.coins>=p.gold?1:0.5}}>
+                <div style={{textAlign:'left'}}>
+                  <div style={{fontSize:11,fontWeight:900}}>{p.label}</div>
+                  <div style={{fontSize:9,opacity:0.6}}>+{p.xp} XP</div>
+                </div>
+                <div style={{fontSize:11,fontWeight:900,color:'#ffd700'}}>{p.gold}🪙</div>
+              </button>)}
+            </div>
+          </>;
+        })()}
+        <div style={{textAlign:'center',marginTop:10}}>
+          <button onClick={()=>{setTrainOpen(false);setTrainTarget(null);}} style={{...FF,padding:'6px 16px',background:'rgba(255,255,255,0.1)',border:'1px solid rgba(255,255,255,0.2)',borderRadius:10,cursor:'pointer',fontSize:11,color:'#fff'}}>閉じる</button>
+        </div>
+      </div>
+    </div>}
+
     {/* 売上回収 */}
     {s.shop.pendingGold>0&&<div style={{...CARD,marginBottom:10,display:'flex',justifyContent:'space-between',alignItems:'center',border:'1px solid #ffd70044',background:'linear-gradient(135deg,rgba(255,215,0,0.10),rgba(255,255,255,0.03))'}}>
       <div>
@@ -1724,10 +2044,30 @@ function HomeScreen({s,d}){
     </div>}
 
     {/* 出品操作 */}
-    <div style={{display:'grid',gridTemplateColumns:'2fr 1fr',gap:8,marginBottom:10}}>
-      <Btn onClick={listAll} color='linear-gradient(135deg,#66bb6a,#2e7d32)' disabled={!hasMat}>📦 全部まとめて出品</Btn>
-      <Btn onClick={delistAll} color='rgba(255,255,255,0.06)' style={{border:'1px solid #ef5350',color:'#ef5350',fontSize:11}} disabled={s.shop.listings.length===0}>全部外す</Btn>
-    </div>
+    {(()=>{
+      const bzLv=s.facilities.bazaar?.lv||0;
+      const canAuto=bzLv>=2;
+      const autoOn=!!s.shop.autoList;
+      const listingKinds=new Set(s.shop.listings.filter(l=>l.qty>0).map(l=>l.itemKey)).size;
+      const dropBonus=bzLv>0?Math.min(0.30+bzLv*0.02, listingKinds*0.03+bzLv*0.02):0;
+      return <>
+        <div style={{display:'grid',gridTemplateColumns:canAuto?'1.4fr 1.4fr 1fr':'2fr 1fr',gap:8,marginBottom:6}}>
+          <Btn onClick={listAll} color='linear-gradient(135deg,#66bb6a,#2e7d32)' disabled={!hasMat}>📦 まとめて出品</Btn>
+          {canAuto&&<Btn onClick={()=>d({type:'TOGGLE_AUTO_LIST'})}
+            color={autoOn?'linear-gradient(135deg,#bf40ff,#7c4dff)':'rgba(255,255,255,0.06)'}
+            style={autoOn?{}:{border:'1px solid #bf88ff',color:'#bf88ff',fontSize:11}}>
+            {autoOn?'⚡ 自動 ON':'⚡ 自動 OFF'}
+          </Btn>}
+          <Btn onClick={delistAll} color='rgba(255,255,255,0.06)' style={{border:'1px solid #ef5350',color:'#ef5350',fontSize:11}} disabled={s.shop.listings.length===0}>外す</Btn>
+        </div>
+        {/* 出品状況バナー */}
+        {(autoOn||dropBonus>0)&&<div style={{...CARD,padding:'6px 10px',marginBottom:10,fontSize:10,display:'flex',justifyContent:'space-between',alignItems:'center',background:'linear-gradient(135deg,rgba(191,136,255,0.06),rgba(255,255,255,0.02))',border:'1px solid rgba(191,136,255,0.2)'}}>
+          {autoOn&&<span style={{color:'#bf88ff'}}>⚡ 戦闘ごとに自動で出品中</span>}
+          {dropBonus>0&&<span style={{color:'#ffd700'}}>📈 成長素材+{Math.round(dropBonus*100)}%</span>}
+        </div>}
+        {!hasMat&&!canAuto&&<div style={{fontSize:9,opacity:0.5,textAlign:'center',marginBottom:10}}>💡 雑貨商Lv2で自動出品が解放</div>}
+      </>;
+    })()}
 
     {/* 素材リスト */}
     <div style={{...CARD,marginBottom:10}}>
@@ -1740,18 +2080,20 @@ function HomeScreen({s,d}){
         {Object.entries(ITEMS).filter(([k])=>(s.materials[k]||0)>0).map(([k,it])=>{
           const qty=s.materials[k]||0;
           const listed=listedKeys.has(k);
-          return <button key={k} onClick={()=>listOne(k)}
+          const isGrowMat=it.basePrice<=0; // 成長素材は出品不可
+          return <button key={k} onClick={()=>{if(!isGrowMat)listOne(k);}}
+            disabled={isGrowMat}
             style={{...FF,display:'flex',alignItems:'center',gap:8,padding:'9px 10px',borderRadius:14,
-              cursor:qty>0?'pointer':'default',
-              background:listed?'rgba(102,187,106,0.15)':'rgba(255,255,255,0.04)',
-              border:`1.5px solid ${listed?'#66bb6a':qty>0?'rgba(255,255,255,0.14)':'rgba(255,255,255,0.05)'}`,
+              cursor:isGrowMat?'default':(qty>0?'pointer':'default'),
+              background:isGrowMat?'rgba(255,215,0,0.04)':listed?'rgba(102,187,106,0.15)':'rgba(255,255,255,0.04)',
+              border:`1.5px solid ${isGrowMat?'#ffd70044':listed?'#66bb6a':qty>0?'rgba(255,255,255,0.14)':'rgba(255,255,255,0.05)'}`,
               opacity:qty>0?1:0.25}}>
             <div style={{fontSize:24,display:'flex',alignItems:'center',justifyContent:'center',width:28,height:28}}><ItemIcon k={k} size={24}/></div>
             <div style={{flex:1,textAlign:'left'}}>
               <div style={{fontSize:11,fontWeight:700}}>{it.name}</div>
-              <div style={{fontSize:10,color:listed?'#ffd700':'rgba(255,255,255,0.45)'}}>×{qty} @ {it.basePrice}G</div>
+              <div style={{fontSize:10,color:isGrowMat?'#ffd700':listed?'#ffd700':'rgba(255,255,255,0.45)'}}>×{qty} {isGrowMat?'(成長素材)':`@ ${it.basePrice}G`}</div>
             </div>
-            <div style={{fontSize:18,opacity:qty>0?1:0.3}}>{listed?'✅':'➕'}</div>
+            <div style={{fontSize:18,opacity:qty>0?1:0.3}}>{isGrowMat?'🔒':listed?'✅':'➕'}</div>
           </button>;
         })}
       </div>
@@ -1861,7 +2203,7 @@ function QuestScreen({s,d}){
   const [subGauges,setSubGauges]=useState([0,0,0,0]);
   const [subFlash,setSubFlash]=useState([false,false,false,false]);
   const pm=s.monsters.find(m=>m.id===s.party.main)||s.monsters[0];
-  const stats=pm?calcStats(pm, s.equipInventory):null;
+  const stats=pm?calcStats(pm, s.equipInventory, s.facilities):null;
   // サブモンスターの実体取得
   const subMonsters=(s.party.subs||[]).map(sid=>sid?s.monsters.find(m=>m.id===sid)||null:null);
 
@@ -1922,9 +2264,12 @@ function QuestScreen({s,d}){
       setEnemies(es);setActiveEnemyIdx(0);setCphase('ready');
     } else if(node.t==='chest'){
       const nl=[...curLoot,...node.items];R.current.loot=nl;setLoot(nl);
-      const gotKey=Math.random()<0.20;
-      if(gotKey)R.current.keyDrops=(R.current.keyDrops||0)+1;
-      setLog(p=>[...p.slice(-6),<span key={Date.now()}>📦 {node.items.map((k,i)=><ItemIcon key={k+'_'+i} k={k} size={14} gap={2}/>)} 入手！{gotKey&&<span style={{color:'#ffd700',fontWeight:900}}> 🗝 修行の鍵！</span>}</span>]);
+      // 鍵ドロップ: 45%で1本 + 追加5%で2本目（実質期待値0.5本/宝箱）
+      let keyDrop=0;
+      if(Math.random()<0.45)keyDrop++;
+      if(keyDrop>0&&Math.random()<0.10)keyDrop++; // ジャックポット
+      if(keyDrop>0)R.current.keyDrops=(R.current.keyDrops||0)+keyDrop;
+      setLog(p=>[...p.slice(-6),<span key={Date.now()}>📦 {node.items.map((k,i)=><ItemIcon key={k+'_'+i} k={k} size={14} gap={2}/>)} 入手！{keyDrop>0&&<span style={{color:'#ffd700',fontWeight:900}}> 🗝 修行の鍵×{keyDrop}！</span>}</span>]);
       setTimeout(()=>processNodeFn(key,idx+1,hp,nl),auto?400:1000);
     } else if(node.t==='rest'){
       const nh=Math.min(stats.maxHp,hp+node.hp);R.current.monHp=nh;setMonHp(nh);
@@ -1944,29 +2289,29 @@ function QuestScreen({s,d}){
     // ゲージリセット
     R.current.gauges[slotIdx]=0;
     setSubGauges([...R.current.gauges]);
+    // スキルLv倍率（Lv1=1.0, Lv2=1.12, Lv3=1.24, Lv4=1.36, Lv5=1.48）
+    const slvMul = 1 + ((sm.skillLv||1)-1)*0.12;
+    const skVal = sk.value * slvMul;
     // 効果適用
     if(sk.type==='atk'){
-      // 追加攻撃: 現在のターゲット敵に
       const idx=R.current.activeIdx;
       const en=R.current.enemies[idx];
       if(!en||!en.alive)return;
-      const sMon = sm;
-      const sSt = calcStats(sMon, s.equipInventory);
-      let dmg=Math.max(1,Math.floor(sSt.atk*sk.value)-Math.floor(en.def/2));
+      const sSt = calcStats(sm, s.equipInventory, s.facilities);
+      let dmg=Math.max(1,Math.floor(sSt.atk*skVal)-Math.floor(en.def/2));
       dmg=Math.floor(dmg*(0.85+Math.random()*0.3));
       en.hp=Math.max(0,en.hp-dmg);
       if(en.hp<=0)en.alive=false;
       setEnemies([...R.current.enemies]);
       setShakeE(true);setTimeout(()=>setShakeE(false),300);
       setDmg({v:dmg,crit:false,who:'e',eIdx:idx});setTimeout(()=>setDmg(null),500);
-      setLog(p=>[...p.slice(-6),<span key={Date.now()+'_sk'}>{sk.icon} <b style={{color:sk.col}}>{sk.name}</b>！ {en.name} -{dmg}</span>]);
+      setLog(p=>[...p.slice(-6),<span key={Date.now()+'_sk'}>{sk.icon} <b style={{color:sk.col}}>{sk.name}</b>{sm.skillLv>1?<sup style={{color:'#ffd700',fontSize:8}}>Lv{sm.skillLv}</sup>:''}！ {en.name} -{dmg}</span>]);
     } else if(sk.type==='aoe'){
-      // 全敵攻撃
-      const sMon=sm;const sSt=calcStats(sMon,s.equipInventory);
+      const sSt=calcStats(sm,s.equipInventory,s.facilities);
       let totalDmg=0;
       R.current.enemies.forEach(en=>{
         if(!en.alive)return;
-        let dmg=Math.max(1,Math.floor(sSt.atk*sk.value)-Math.floor(en.def/2));
+        let dmg=Math.max(1,Math.floor(sSt.atk*skVal)-Math.floor(en.def/2));
         dmg=Math.floor(dmg*(0.85+Math.random()*0.3));
         en.hp=Math.max(0,en.hp-dmg);
         if(en.hp<=0)en.alive=false;
@@ -1974,28 +2319,27 @@ function QuestScreen({s,d}){
       });
       setEnemies([...R.current.enemies]);
       setShakeE(true);setTimeout(()=>setShakeE(false),300);
-      setLog(p=>[...p.slice(-6),<span key={Date.now()+'_sk'}>{sk.icon} <b style={{color:sk.col}}>{sk.name}</b>！ 全敵に計-{totalDmg}</span>]);
+      setLog(p=>[...p.slice(-6),<span key={Date.now()+'_sk'}>{sk.icon} <b style={{color:sk.col}}>{sk.name}</b>{sm.skillLv>1?<sup style={{color:'#ffd700',fontSize:8}}>Lv{sm.skillLv}</sup>:''}！ 全敵に計-{totalDmg}</span>]);
     } else if(sk.type==='heal'){
-      const heal=Math.floor(stats.maxHp*sk.value);
+      const heal=Math.floor(stats.maxHp*skVal);
       const nh=Math.min(stats.maxHp,R.current.monHp+heal);
       R.current.monHp=nh;setMonHp(nh);
-      setLog(p=>[...p.slice(-6),<span key={Date.now()+'_sk'}>{sk.icon} <b style={{color:sk.col}}>{sk.name}</b>！ HP+{heal}</span>]);
+      setLog(p=>[...p.slice(-6),<span key={Date.now()+'_sk'}>{sk.icon} <b style={{color:sk.col}}>{sk.name}</b>{sm.skillLv>1?<sup style={{color:'#ffd700',fontSize:8}}>Lv{sm.skillLv}</sup>:''}！ HP+{heal}</span>]);
     } else if(sk.type==='buf_atk'){
-      R.current.buffAtk=sk.value;
-      setLog(p=>[...p.slice(-6),<span key={Date.now()+'_sk'}>{sk.icon} <b style={{color:sk.col}}>{sk.name}</b>！ 次の攻撃×{sk.value}</span>]);
+      R.current.buffAtk=skVal;
+      setLog(p=>[...p.slice(-6),<span key={Date.now()+'_sk'}>{sk.icon} <b style={{color:sk.col}}>{sk.name}</b>！ 次の攻撃×{skVal.toFixed(1)}</span>]);
     } else if(sk.type==='buf_def'){
-      R.current.buffDef=sk.value; // 反撃ダメージ倍率（<1で軽減）
+      R.current.buffDef=sk.value; // 軽減は強化しすぎない
       setLog(p=>[...p.slice(-6),<span key={Date.now()+'_sk'}>{sk.icon} <b style={{color:sk.col}}>{sk.name}</b>！ 反撃ダメージ軽減</span>]);
     } else if(sk.type==='luk'){
-      R.current.buffLuk=sk.value;
+      R.current.buffLuk=skVal;
       setLog(p=>[...p.slice(-6),<span key={Date.now()+'_sk'}>{sk.icon} <b style={{color:sk.col}}>{sk.name}</b>！ クリ率UP</span>]);
     } else if(sk.type==='drain'){
-      // 攻撃して、ダメージの30%をHP回復
       const idx=R.current.activeIdx;
       const en=R.current.enemies[idx];
       if(!en||!en.alive)return;
-      const sSt=calcStats(sm,s.equipInventory);
-      let dmg=Math.max(1,Math.floor(sSt.atk*sk.value)-Math.floor(en.def/2));
+      const sSt=calcStats(sm,s.equipInventory,s.facilities);
+      let dmg=Math.max(1,Math.floor(sSt.atk*skVal)-Math.floor(en.def/2));
       dmg=Math.floor(dmg*(0.85+Math.random()*0.3));
       en.hp=Math.max(0,en.hp-dmg);
       if(en.hp<=0)en.alive=false;
@@ -2066,12 +2410,35 @@ function QuestScreen({s,d}){
       }
       totalXp+=e.xp||0;totalGold+=e.gold||0;
     });
+    // 出品ボーナス: 雑貨商を持ち、出品中の異なるアイテム種類数に応じて成長素材ドロップ率UP
+    // 出品種類×3%（最大+30%）、雑貨商Lvでさらに上限UP
+    const bzLv=s.facilities.bazaar?.lv||0;
+    const listingKinds=bzLv>0?new Set(s.shop.listings.filter(l=>l.qty>0).map(l=>l.itemKey)).size:0;
+    const listBonus=Math.min(0.30+bzLv*0.02, listingKinds*0.03+bzLv*0.02);
     // ボスは追加ドロップ
     if(node.t==='boss'){
       const e=R.current.enemies[0];
       const pool=isTraining&&q?.trainingLoot?q.trainingLoot:e.loot;
       if(pool&&pool.length>0){drops.push(pool[Math.floor(Math.random()*pool.length)]);}
+      // 成長素材ドロップ（章倍率で確率UP）
+      const chapMul=q?.chapter||1;
+      // スキル石: ボス必ず1〜2個（章数に応じて）+ 出品ボーナスで追加機会
+      const stones=1+Math.floor(Math.random()*Math.min(2,chapMul));
+      for(let i=0;i<stones;i++)drops.push('skill_stone');
+      if(listBonus>0&&Math.random()<listBonus)drops.push('skill_stone');
+      // 覚醒素材: 4章以降のボスで 35〜70% 確率 + 出品ボーナス
+      if(chapMul>=4&&Math.random()<0.35+chapMul*0.07+listBonus*0.5){
+        drops.push('awaken_soul');
+        if(chapMul>=5&&Math.random()<0.3+listBonus*0.5)drops.push('awaken_soul');
+      }
+      // 修行の鍵: ボス撃破で 50% 確率で1本、追加15%で2本目
+      let bossKey=0;
+      if(Math.random()<0.50)bossKey++;
+      if(bossKey>0&&Math.random()<0.15)bossKey++;
+      if(bossKey>0){R.current.keyDrops=(R.current.keyDrops||0)+bossKey;R.current._lastKeyDrop=bossKey;}
     }
+    // 通常戦闘でもごく低確率で スキル石 ドロップ（出品ボーナスで増加: 0.06 → 最大0.16+）
+    if(node.t==='enemy'&&Math.random()<0.06+listBonus*0.33){drops.push('skill_stone');}
     // 装備ドロップ
     const dropTable=node.t==='boss'?EQUIP_DROP_BOSS:EQUIP_DROP_NORMAL;
     const newEquips=[];
@@ -2087,7 +2454,8 @@ function QuestScreen({s,d}){
     R.current.equipDrops=[...(R.current.equipDrops||[]),...newEquips];
     setLoot(nl);
     if(drops.length||newEquips.length){
-      setLog(p=>[...p.slice(-6),<span key={Date.now()}>💀 {drops.map((k,i)=><ItemIcon key={k+'_'+i} k={k} size={14} gap={2}/>)}{newEquips.map((eq,i)=><span key={eq.id} style={{color:RC[getEqRarity(eq)],fontWeight:900,marginLeft:4,display:'inline-flex',alignItems:'center',gap:2}}><EquipIcon k={eq.key} size={16}/>{EQUIP[eq.key]?.name} Lv{eq.lv}!</span>)}</span>]);
+      setLog(p=>[...p.slice(-6),<span key={Date.now()}>💀 {drops.map((k,i)=><ItemIcon key={k+'_'+i} k={k} size={14} gap={2}/>)}{R.current._lastKeyDrop>0&&<span style={{color:'#ffd700',fontWeight:900,marginLeft:4}}>🗝×{R.current._lastKeyDrop}</span>}{newEquips.map((eq,i)=><span key={eq.id} style={{color:RC[getEqRarity(eq)],fontWeight:900,marginLeft:4,display:'inline-flex',alignItems:'center',gap:2}}><EquipIcon k={eq.key} size={16}/>{EQUIP[eq.key]?.name} Lv{eq.lv}!</span>)}</span>]);
+      R.current._lastKeyDrop=0; // 1回限りの表示用カウンタをリセット
     }
     const ni=R.current.nodeIdx+1;
     setTimeout(()=>processNodeFn(R.current.qKey,ni,R.current.monHp,nl),auto?400:1100);
@@ -2443,22 +2811,31 @@ function BagScreen({s,d,onUseNameplate}){
         <div style={{fontSize:10,fontWeight:700,color:'#bf88ff',marginBottom:8}}>✨ 使えるアイテム</div>
         {[['exp_book','📗','けいけんちの書','PL EXP +200'],['exp_tome','📕','けいけんちの大書','PL EXP +800'],['elixir','✨','エリクサー','モンスター EXP +500'],['moonflower','🌸','つきのはな','PL EXP +150'],['ancient_coin','🪙','こだいコイン','PL EXP +300'],['star_fragment','💫','ほしのかけら','PL EXP +100']].map(([k,ico,name,eff])=>{
           const qty=s.materials[k]||0;if(qty===0)return null;
-          return <div key={k} style={{display:'flex',alignItems:'center',gap:8,background:'rgba(191,136,255,0.06)',borderRadius:12,padding:'6px 10px',marginBottom:5}}>
+          return <div key={k} style={{display:'flex',alignItems:'center',gap:6,background:'rgba(191,136,255,0.06)',borderRadius:12,padding:'6px 10px',marginBottom:5}}>
             <span style={{fontSize:20}}>{ico}</span>
-            <div style={{flex:1}}><div style={{fontSize:11,fontWeight:700}}>{name}</div><div style={{fontSize:10,opacity:0.6}}>{eff}</div></div>
-            <div style={{fontSize:11,fontWeight:900,color:'#ffd700',marginRight:6}}>×{qty}</div>
-            <button onClick={()=>d({type:'USE_ITEM',itemKey:k,count:1})} style={{...FF,padding:'4px 10px',borderRadius:10,border:'1px solid #bf88ff',background:'rgba(191,136,255,0.2)',cursor:'pointer',fontSize:11,fontWeight:700,color:'#bf88ff'}}>使う</button>
+            <div style={{flex:1,minWidth:0}}><div style={{fontSize:11,fontWeight:700,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{name}</div><div style={{fontSize:9,opacity:0.6,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{eff}</div></div>
+            <div style={{fontSize:11,fontWeight:900,color:'#ffd700',marginRight:4,flexShrink:0}}>×{qty}</div>
+            <button onClick={()=>d({type:'USE_ITEM',itemKey:k,count:1})} style={{...FF,padding:'4px 8px',borderRadius:8,border:'1px solid #bf88ff66',background:'rgba(191,136,255,0.15)',cursor:'pointer',fontSize:10,fontWeight:900,color:'#bf88ff',flexShrink:0}}>+1</button>
+            {qty>1&&<button onClick={()=>d({type:'USE_ITEM',itemKey:k,count:qty})} style={{...FF,padding:'4px 8px',borderRadius:8,border:'none',background:'linear-gradient(135deg,#bf40ff,#ff6b9d)',cursor:'pointer',fontSize:10,fontWeight:900,color:'#fff',flexShrink:0}}>全部 ({qty})</button>}
           </div>;
         })}
       </div>}
       <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8}}>
         {Object.entries(ITEMS).filter(([k])=>(s.materials[k]||0)>0).length===0&&<div style={{gridColumn:'1/-1',textAlign:'center',padding:'24px 12px',opacity:0.5,fontSize:11}}>素材がありません<br/>クエストで集めましょう</div>}
-        {Object.entries(ITEMS).filter(([k])=>(s.materials[k]||0)>0).map(([k,it])=>{const qty=s.materials[k]||0;return <div key={k} style={{...CARD,textAlign:'center',padding:10,opacity:qty>0?1:0.3,border:`1px solid ${qty>0?'rgba(255,255,255,0.2)':'rgba(255,255,255,0.06)'}`}}>
-          <div style={{fontSize:28,display:'flex',alignItems:'center',justifyContent:'center',height:32}}><ItemIcon k={k} size={32}/></div>
-          <div style={{fontSize:10,fontWeight:700,marginTop:4}}>{it.name}</div>
-          <div style={{fontSize:11,color:'#ffd700',fontWeight:900}}>×{qty}</div>
-          <div style={{fontSize:9,opacity:0.5}}>{it.basePrice>0?`${it.basePrice}G`:'使用可'}</div>
-        </div>})}
+        {Object.entries(ITEMS).filter(([k])=>(s.materials[k]||0)>0).map(([k,it])=>{
+          const qty=s.materials[k]||0;
+          // 成長素材は使い方を案内
+          const isGrowMat = k==='skill_stone'||k==='awaken_soul';
+          const growHint = k==='skill_stone'?'モンスター詳細でスキル強化に使用':
+                           k==='awaken_soul'?'★5モンスターの覚醒に使用':null;
+          return <div key={k} style={{...CARD,textAlign:'center',padding:10,opacity:qty>0?1:0.3,border:`1px solid ${isGrowMat?'#ffd70066':qty>0?'rgba(255,255,255,0.2)':'rgba(255,255,255,0.06)'}`,background:isGrowMat?'linear-gradient(135deg,rgba(255,215,0,0.06),rgba(255,255,255,0.02))':undefined}}>
+            <div style={{fontSize:28,display:'flex',alignItems:'center',justifyContent:'center',height:32}}><ItemIcon k={k} size={32}/></div>
+            <div style={{fontSize:10,fontWeight:700,marginTop:4}}>{it.name}</div>
+            <div style={{fontSize:11,color:'#ffd700',fontWeight:900}}>×{qty}</div>
+            <div style={{fontSize:9,opacity:0.5}}>{it.basePrice>0?`${it.basePrice}G`:isGrowMat?'成長素材':'使用可'}</div>
+            {growHint&&<div style={{fontSize:8,marginTop:4,color:'#ffd700',opacity:0.85,lineHeight:1.3}}>{growHint}</div>}
+          </div>;
+        })}
       </div>
     </div>}
     {tab==='equip'&&pm&&<div>
@@ -2556,8 +2933,13 @@ function BagScreen({s,d,onUseNameplate}){
 // ─── GACHA SCREEN ────────────────────────────────────────
 function GachaScreen({s,d}){
   const [spin,setSpin]=useState(false);
+  const [tab,setTab]=useState('monster'); // monster | material
   function pull(n){if(spin)return;setSpin(true);setTimeout(()=>{d({type:'GACHA',n});setSpin(false)},900);}
+  function pullMat(n){if(spin)return;setSpin(true);setTimeout(()=>{d({type:'MATERIAL_GACHA',n});setSpin(false)},900);}
   const gr=s.gacha;
+  const mgr=s.matGacha;
+
+  // モンスターガチャ結果表示
   if(gr){
     const r=gr.results[gr.idx];const mi=MONS[r.type];
     return <div style={{width:'100%',padding:14,textAlign:'center',animation:'fadeIn 0.3s ease-out'}}>
@@ -2574,39 +2956,119 @@ function GachaScreen({s,d}){
       <Btn onClick={()=>gr.idx+1<gr.results.length?d({type:'GACHA_NEXT'}):d({type:'GACHA_DONE'})} color='linear-gradient(135deg,#bf88ff,#ff6b9d)'>{gr.idx+1<gr.results.length?'つぎへ →':'✨ おわり'}</Btn>
     </div>;
   }
-  // レアリティ確率（POOL重みから算出）
+
+  // 素材ガチャ結果表示
+  if(mgr){
+    const r=mgr.results[mgr.idx];
+    const isJackpot=r.rarity==='LR'||r.rarity==='UR';
+    return <div style={{width:'100%',padding:14,textAlign:'center',animation:'fadeIn 0.3s ease-out'}}>
+      <div style={{fontSize:11,opacity:0.45,marginBottom:6}}>{mgr.idx+1}/{mgr.results.length}</div>
+      <div style={{...CARD,padding:32,marginBottom:14,background:`linear-gradient(135deg,${RC[r.rarity]}22,rgba(255,255,255,0.04))`,border:`2px solid ${RC[r.rarity]}`,animation:'pop 0.5s ease-out'}}>
+        {isJackpot&&<div style={{fontSize:12,color:'#ffd700',fontWeight:900,marginBottom:8,animation:'glow 1.5s ease-in-out infinite'}}>{r.rarity==='LR'?'🌟 大当たり！':'✨ レア排出！'}</div>}
+        <div style={{fontSize:60,marginBottom:8,animation:'float 1.4s ease-in-out infinite'}}>
+          {r.item==='skill_stone'?'📜':'💠'}
+        </div>
+        <div style={{fontSize:11,opacity:0.65}}>×{r.qty}</div>
+        <div style={{marginTop:8,fontSize:18,fontWeight:900,color:RC[r.rarity]}}>{ITEMS[r.item]?.name}</div>
+        <div style={{marginTop:6,display:'flex',justifyContent:'center',gap:6}}>
+          <Pill label={r.rarity} color={RC[r.rarity]}/>
+          <Pill label={`×${r.qty}`} color='#ffd700'/>
+        </div>
+      </div>
+      <Btn onClick={()=>mgr.idx+1<mgr.results.length?d({type:'MAT_GACHA_NEXT'}):d({type:'MAT_GACHA_DONE'})} color='linear-gradient(135deg,#ffd700,#ff9800)' text='#1a0533'>{mgr.idx+1<mgr.results.length?'つぎへ →':'✨ おわり'}</Btn>
+    </div>;
+  }
+
+  // 確率計算
   const rateCounts={C:0,R:0,SR:0,UR:0,LR:0};
   POOL.forEach(k=>{const r=MONS[k]?.rarity;if(r&&rateCounts[r]!==undefined)rateCounts[r]++});
   const total=POOL.length;
+
+  // 素材ガチャ確率
+  const matTotal=MATERIAL_GACHA_POOL.reduce((a,p)=>a+p.rate,0);
+
+  // 素材ガチャコスト（雑貨商Lvで割引）
+  const bzLv=s.facilities.bazaar?.lv||0;
+  const matDisc=Math.min(0.20,bzLv*0.022);
+  const matCost1=Math.floor(300*(1-matDisc));
+  const matCost10=Math.floor(300*10*0.9*(1-matDisc));
+
   return <div style={{width:'100%',padding:14,animation:'fadeIn 0.4s ease-out'}}>
-    <div style={{...CARD,marginBottom:14,textAlign:'center',padding:'18px 14px',background:'linear-gradient(135deg,rgba(191,136,255,0.12),rgba(255,107,157,0.08))'}}>
-      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}}>
-        <div style={{fontWeight:900,fontSize:18}}>🎰 モンスターガチャ</div>
-        <div style={{fontWeight:900,color:'#ffd700',fontSize:14}}>💰 {s.coins}</div>
-      </div>
-      <div style={{fontSize:72,animation:spin?'pulse 0.3s ease-in-out infinite':'float 2s ease-in-out infinite',marginBottom:8}}>{spin?'🌀':'🎱'}</div>
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginTop:14}}>
-        <Btn onClick={()=>pull(1)} color='linear-gradient(135deg,#bf88ff,#7c3aed)' disabled={spin||s.coins<100}>1回 💰100</Btn>
-        <Btn onClick={()=>pull(10)} color='linear-gradient(135deg,#ffd700,#ff9800)' text='#1a0533' disabled={spin||s.coins<900}>10連 💰900</Btn>
-      </div>
+    {/* タブ切替 */}
+    <div style={{display:'flex',gap:4,marginBottom:12,background:'rgba(255,255,255,0.04)',borderRadius:14,padding:3}}>
+      {[['monster','🎰 モンスター'],['material','📜 素材']].map(([k,l])=>(
+        <button key={k} onClick={()=>setTab(k)} style={{...FF,flex:1,padding:'9px 0',borderRadius:11,border:'none',fontWeight:900,fontSize:11,cursor:'pointer',background:tab===k?'linear-gradient(135deg,#bf88ff,#7c3aed)':'transparent',color:tab===k?'#fff':'rgba(255,255,255,0.5)',transition:'all 0.18s'}}>{l}</button>
+      ))}
     </div>
-    {/* 確率表 */}
-    <div style={{...CARD,marginBottom:12}}>
-      <div style={{fontSize:11,fontWeight:700,opacity:0.6,marginBottom:8}}>📊 排出確率</div>
-      <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:6}}>
-        {['LR','UR','SR','R','C'].map(r=>{
-          const pct=total?(rateCounts[r]/total*100).toFixed(2):'0.00';
-          return <div key={r} style={{textAlign:'center',padding:'6px 0',borderRadius:10,background:'rgba(255,255,255,0.04)',border:`1px solid ${RC[r]}55`}}>
-            <div style={{fontSize:10,fontWeight:900,color:RC[r]}}>{r}</div>
-            <div style={{fontSize:11,fontWeight:700,marginTop:2}}>{pct}%</div>
-          </div>;
-        })}
+
+    {/* モンスターガチャ */}
+    {tab==='monster'&&<>
+      <div style={{...CARD,marginBottom:14,textAlign:'center',padding:'18px 14px',background:'linear-gradient(135deg,rgba(191,136,255,0.12),rgba(255,107,157,0.08))'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}}>
+          <div style={{fontWeight:900,fontSize:18}}>🎰 モンスターガチャ</div>
+          <div style={{fontWeight:900,color:'#ffd700',fontSize:14}}>💰 {s.coins}</div>
+        </div>
+        <div style={{fontSize:72,animation:spin?'pulse 0.3s ease-in-out infinite':'float 2s ease-in-out infinite',marginBottom:8}}>{spin?'🌀':'🎱'}</div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginTop:14}}>
+          <Btn onClick={()=>pull(1)} color='linear-gradient(135deg,#bf88ff,#7c3aed)' disabled={spin||s.coins<100}>1回 💰100</Btn>
+          <Btn onClick={()=>pull(10)} color='linear-gradient(135deg,#ffd700,#ff9800)' text='#1a0533' disabled={spin||s.coins<900}>10連 💰900</Btn>
+        </div>
       </div>
-    </div>
-    <div style={{...CARD,fontSize:10,opacity:0.6,lineHeight:1.7}}>
-      💡 重複モンスターは自動で限界突破され、ステータスが+12%/★アップします。<br/>
-      ★3 / ★5 でレア度もUP。★5同士の同種は合成タブでランクアップ可能！
-    </div>
+      <div style={{...CARD,marginBottom:12}}>
+        <div style={{fontSize:11,fontWeight:700,opacity:0.6,marginBottom:8}}>📊 排出確率</div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:6}}>
+          {['LR','UR','SR','R','C'].map(r=>{
+            const pct=total?(rateCounts[r]/total*100).toFixed(2):'0.00';
+            return <div key={r} style={{textAlign:'center',padding:'6px 0',borderRadius:10,background:'rgba(255,255,255,0.04)',border:`1px solid ${RC[r]}55`}}>
+              <div style={{fontSize:10,fontWeight:900,color:RC[r]}}>{r}</div>
+              <div style={{fontSize:11,fontWeight:700,marginTop:2}}>{pct}%</div>
+            </div>;
+          })}
+        </div>
+      </div>
+      <div style={{...CARD,fontSize:10,opacity:0.6,lineHeight:1.7}}>
+        💡 重複モンスターは自動で限界突破され、ステータスが+12%/★アップします。<br/>
+        ★3 / ★5 でレア度もUP。★5同士の同種は合成タブでランクアップ可能！
+      </div>
+    </>}
+
+    {/* 素材ガチャ */}
+    {tab==='material'&&<>
+      <div style={{...CARD,marginBottom:14,textAlign:'center',padding:'18px 14px',background:'linear-gradient(135deg,rgba(255,215,0,0.12),rgba(255,152,0,0.06))'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}}>
+          <div style={{fontWeight:900,fontSize:18}}>📜 素材ガチャ</div>
+          <div style={{fontWeight:900,color:'#ffd700',fontSize:14}}>💰 {s.coins}</div>
+        </div>
+        <div style={{fontSize:60,animation:spin?'pulse 0.3s ease-in-out infinite':'float 2s ease-in-out infinite',marginBottom:8}}>{spin?'🌀':'🎁'}</div>
+        <div style={{fontSize:10,opacity:0.7,marginBottom:6}}>スキル石・たましいのかけら などの成長素材がランダムで排出</div>
+        {bzLv>0&&<div style={{fontSize:10,color:'#66bb6a',marginBottom:8,fontWeight:700}}>🏪 雑貨商Lv{bzLv}：-{Math.round(matDisc*100)}%割引適用中</div>}
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginTop:10}}>
+          <Btn onClick={()=>pullMat(1)} color='linear-gradient(135deg,#ffd700,#ff9800)' text='#1a0533' disabled={spin||s.coins<matCost1}>1回 💰{matCost1}</Btn>
+          <Btn onClick={()=>pullMat(10)} color='linear-gradient(135deg,#ff6b9d,#ef5350)' disabled={spin||s.coins<matCost10}>10連 💰{matCost10}</Btn>
+        </div>
+        <div style={{fontSize:9,opacity:0.5,marginTop:6}}>※ 10連は10%お得</div>
+      </div>
+      {/* 素材ガチャ確率表 */}
+      <div style={{...CARD,marginBottom:12}}>
+        <div style={{fontSize:11,fontWeight:700,opacity:0.6,marginBottom:8}}>📊 排出内容と確率</div>
+        <div style={{display:'flex',flexDirection:'column',gap:5}}>
+          {MATERIAL_GACHA_POOL.slice().sort((a,b)=>b.rate-a.rate).map((p,i)=>{
+            const pct=(p.rate/matTotal*100).toFixed(2);
+            return <div key={i} style={{display:'flex',alignItems:'center',gap:8,padding:'5px 8px',borderRadius:8,background:'rgba(255,255,255,0.03)',border:`1px solid ${RC[p.rarity]}33`}}>
+              <div style={{fontSize:18}}>{p.item==='skill_stone'?'📜':'💠'}</div>
+              <div style={{flex:1,fontSize:10,fontWeight:700}}>{p.label}</div>
+              <Pill label={p.rarity} color={RC[p.rarity]}/>
+              <div style={{fontSize:11,fontWeight:900,color:'#ffd700',minWidth:44,textAlign:'right'}}>{pct}%</div>
+            </div>;
+          })}
+        </div>
+      </div>
+      <div style={{...CARD,fontSize:10,opacity:0.65,lineHeight:1.7}}>
+        💡 スキル石: モンスタータブ→💪強化→スキル強化で使用<br/>
+        💡 たましいのかけら: 限界突破★5達成モンスターの覚醒に使用<br/>
+        💡 雑貨商Lvを上げると最大-20%まで割引が効きます
+      </div>
+    </>}
   </div>;
 }
 
@@ -2618,9 +3080,23 @@ function CollectionScreen({s,d}){
   const [tab,setTab]=useState('owned');
   const [sel,setSel]=useState(null);
   const [sortBy,setSortBy]=useState(()=>{try{return localStorage.getItem('mlg_sort')||'id'}catch(e){return 'id'}});
+  const [renameId,setRenameId]=useState(null); // リネーム対象のモンスターID
+  const [renameText,setRenameText]=useState('');
   useEffect(()=>{try{localStorage.setItem('mlg_sort',sortBy)}catch(e){}},[sortBy]);
   const selMon=s.monsters.find(m=>m.id===sel);
   const pm=s.monsters.find(m=>m.id===s.party.main)||s.monsters[0];
+  const renameMon=s.monsters.find(m=>m.id===renameId);
+  function openRename(m){
+    setRenameId(m.id);
+    setRenameText(m.name);
+  }
+  function commitRename(){
+    if(!renameMon)return;
+    const nm=renameText.trim();
+    if(nm.length===0){setRenameId(null);return;}
+    d({type:'RENAME_MONSTER',mId:renameMon.id,name:nm});
+    setRenameId(null);
+  }
   // ソート
   const sortedMonsters=(()=>{
     const arr=[...s.monsters];
@@ -2633,24 +3109,110 @@ function CollectionScreen({s,d}){
 
   return <div style={{width:'100%',padding:12,animation:'fadeIn 0.4s ease-out'}}>
     {/* サブタブ */}
-    <div style={{display:'flex',gap:4,marginBottom:12,background:'rgba(255,255,255,0.04)',borderRadius:14,padding:4}}>
-      {[['owned','📦 所持'],['enhance','💪 強化'],['fusion','⚗ 合成']].map(([k,l])=>(
-        <button key={k} onClick={()=>setTab(k)} style={{...FF,flex:1,padding:'9px 0',borderRadius:11,border:'none',fontWeight:900,fontSize:11,cursor:'pointer',background:tab===k?'linear-gradient(135deg,#bf88ff,#7c3aed)':'transparent',color:tab===k?'#fff':'rgba(255,255,255,0.5)',transition:'all 0.18s'}}>{l}</button>
+    <div style={{display:'flex',gap:3,marginBottom:12,background:'rgba(255,255,255,0.04)',borderRadius:14,padding:3}}>
+      {[['owned','📦 所持'],['party','⚔ 編成'],['enhance','💪 強化'],['fusion','⚗ 合成']].map(([k,l])=>(
+        <button key={k} onClick={()=>setTab(k)} style={{...FF,flex:1,padding:'9px 0',borderRadius:11,border:'none',fontWeight:900,fontSize:10,cursor:'pointer',background:tab===k?'linear-gradient(135deg,#bf88ff,#7c3aed)':'transparent',color:tab===k?'#fff':'rgba(255,255,255,0.5)',transition:'all 0.18s'}}>{l}</button>
       ))}
     </div>
 
     {tab==='owned'&&<>
-      {/* パーティ */}
-      {pm&&<div style={{...CARD,marginBottom:10,border:'2px solid #bf88ff33',padding:10}}>
-        <div style={{fontSize:10,fontWeight:700,opacity:0.6,marginBottom:6}}>⚔ 現在のパーティー</div>
-        <div style={{display:'flex',alignItems:'center',gap:10}}>
-          <div style={{animation:'glow 2s ease-in-out infinite'}}><EquippedMonster monster={pm} size={48} anim="float"/></div>
+      {/* 選択モンスター詳細（上部、選択時のみ表示） */}
+      {selMon&&<div style={{...CARD,animation:'pop 0.25s ease-out',border:`2px solid ${MONS[selMon.type]?.color}55`,marginBottom:10,padding:12}}>
+        <div style={{display:'flex',gap:10,alignItems:'center',marginBottom:10}}>
+          <EquippedMonster monster={selMon} size={56} anim="float"/>
           <div style={{flex:1,minWidth:0}}>
-            <div style={{fontWeight:900,fontSize:13}}>{pm.name}</div>
-            <div style={{display:'flex',gap:4,flexWrap:'wrap',margin:'3px 0'}}><Pill label={pm.rarity} color={RC[pm.rarity]}/>{pm.lb>0&&<Pill label={`★${pm.lb}`} color='#ff9800'/>}<Pill label={`Lv${pm.level}`} color='#42a5f5'/></div>
-            {(()=>{const st=calcStats(pm, s.equipInventory);return <div style={{fontSize:9,opacity:0.6}}>ATK:{st.atk} DEF:{st.def} SPD:{st.spd}</div>})()}
+            <div style={{display:'flex',alignItems:'center',gap:6}}>
+              <div style={{fontWeight:900,fontSize:14,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{selMon.name}</div>
+              <button type="button" onClick={(e)=>{
+                e.stopPropagation();
+                openRename(selMon);
+              }} title="名前を変更" style={{...FF,padding:'4px 8px',borderRadius:6,border:'1px solid rgba(255,255,255,0.25)',background:'rgba(191,136,255,0.15)',color:'#bf88ff',cursor:'pointer',fontSize:13,lineHeight:1,flexShrink:0,fontWeight:900}}>✏</button>
+            </div>
+            <div style={{display:'flex',gap:4,flexWrap:'wrap',margin:'4px 0'}}><Pill label={selMon.rarity} color={RC[selMon.rarity]}/>{selMon.lb>0&&<Pill label={`★${selMon.lb}/5`} color='#ff9800'/>}{(selMon.awaken||0)>0&&<Pill label={`覚醒★${selMon.awaken}`} color='#bf40ff'/>}<Pill label={`Lv${selMon.level}`} color='#42a5f5'/>{(selMon.skillLv||1)>1&&<Pill label={`スキルLv${selMon.skillLv}`} color='#ffd700'/>}</div>
+            {(()=>{const st=calcStats(selMon, s.equipInventory, s.facilities);return <div style={{fontSize:10,opacity:0.6}}>HP:{st.maxHp} ATK:{st.atk} DEF:{st.def} SPD:{st.spd} LUK:{st.luk}</div>})()}
           </div>
         </div>
+        {(()=>{const sk=SKILLS[MONS[selMon.type]?.skill];if(!sk)return null;
+          const sl=selMon.skillLv||1;
+          const stoneCost=2+sl,goldCost=800*sl;
+          const stoneHave=s.materials.skill_stone||0;
+          const canUp=sl<5&&stoneHave>=stoneCost&&s.coins>=goldCost;
+          return <div style={{background:`${sk.col}22`,border:`1px solid ${sk.col}66`,borderRadius:12,padding:'8px 10px',marginBottom:8}}>
+          <div style={{fontSize:9,color:sk.col,fontWeight:700,marginBottom:3}}>⚡ サブ枠スキル {sl>1&&<span style={{color:'#ffd700'}}>Lv{sl}/5</span>}</div>
+          <div style={{fontSize:13,fontWeight:900}}>{sk.icon} {sk.name} <span style={{fontSize:9,opacity:0.6,marginLeft:6}}>CD:{sk.cd}s</span></div>
+          <div style={{fontSize:10,opacity:0.7,marginTop:2}}>{sk.desc}{sl>1&&<span style={{color:'#ffd700',marginLeft:4}}>（威力×{(1+(sl-1)*0.12).toFixed(2)}）</span>}</div>
+          {sl<5
+            ?(()=>{
+              let sim_sl=sl, sim_stone=stoneHave, sim_coin=s.coins, sim_steps=0, sim_totalStone=0, sim_totalGold=0;
+              while(sim_sl<5){
+                const sc=2+sim_sl, gc=800*sim_sl;
+                if(sim_stone<sc||sim_coin<gc)break;
+                sim_stone-=sc;sim_coin-=gc;sim_totalStone+=sc;sim_totalGold+=gc;sim_sl++;sim_steps++;
+              }
+              const canMax=sim_steps>1;
+              return <div style={{display:'grid',gridTemplateColumns:canMax?'1fr 1fr':'1fr',gap:6,marginTop:8}}>
+                <button onClick={()=>d({type:'SKILL_UP',mId:selMon.id})} disabled={!canUp}
+                  style={{...FF,padding:'8px 10px',borderRadius:10,border:'none',
+                    background:canUp?'linear-gradient(135deg,#ffd700,#ff9800)':'rgba(255,255,255,0.05)',
+                    color:canUp?'#1a0a00':'rgba(255,255,255,0.4)',
+                    cursor:canUp?'pointer':'default',fontSize:11,fontWeight:900,
+                    display:'flex',justifyContent:'space-between',alignItems:'center',gap:6}}>
+                  <span>⚡ +1</span>
+                  <span style={{fontSize:9,opacity:0.9}}>📜{stoneCost}・💰{goldCost}</span>
+                </button>
+                {canMax&&<button onClick={()=>d({type:'SKILL_UP_MAX',mId:selMon.id})}
+                  style={{...FF,padding:'8px 10px',borderRadius:10,border:'none',
+                    background:'linear-gradient(135deg,#ff6b9d,#bf40ff)',
+                    color:'#fff',cursor:'pointer',fontSize:11,fontWeight:900,
+                    display:'flex',justifyContent:'space-between',alignItems:'center',gap:6}}>
+                  <span>⚡ Lv{sim_sl} まで</span>
+                  <span style={{fontSize:9,opacity:0.9}}>📜{sim_totalStone}・💰{sim_totalGold}</span>
+                </button>}
+              </div>;
+            })()
+            :<div style={{textAlign:'center',marginTop:8,padding:'8px 10px',borderRadius:10,background:'rgba(255,215,0,0.15)',color:'#ffd700',fontSize:12,fontWeight:900}}>⚡ スキルLv5（MAX）</div>}
+        </div>})()}
+        {/* 覚醒 UI: lb=5の時のみ表示 */}
+        {(selMon.lb||0)>=5&&(()=>{
+          const aw=selMon.awaken||0;
+          const soulCost=3+aw*2, goldCost=5000*(aw+1);
+          const soulHave=s.materials.awaken_soul||0;
+          const canAwaken=aw<5&&soulHave>=soulCost&&s.coins>=goldCost;
+          return <div style={{background:'linear-gradient(135deg,rgba(191,64,255,0.15),rgba(255,107,157,0.08))',border:'1px solid #bf40ff66',borderRadius:12,padding:'8px 10px'}}>
+            <div style={{fontSize:9,color:'#bf40ff',fontWeight:700,marginBottom:3}}>🌟 覚醒 {aw>0&&<span style={{color:'#ffd700'}}>★{aw}/5</span>}</div>
+            <div style={{fontSize:11,opacity:0.85}}>限界突破★5の先へ。各覚醒で全ステ+18%</div>
+            {aw<5
+              ?(()=>{
+                let sim_aw=aw, sim_soul=soulHave, sim_coin=s.coins, sim_steps=0, sim_totalSoul=0, sim_totalGold=0;
+                while(sim_aw<5){
+                  const sc=3+sim_aw*2, gc=5000*(sim_aw+1);
+                  if(sim_soul<sc||sim_coin<gc)break;
+                  sim_soul-=sc;sim_coin-=gc;sim_totalSoul+=sc;sim_totalGold+=gc;sim_aw++;sim_steps++;
+                }
+                const canMax=sim_steps>1;
+                return <div style={{display:'grid',gridTemplateColumns:canMax?'1fr 1fr':'1fr',gap:6,marginTop:8}}>
+                  <button onClick={()=>d({type:'AWAKEN',mId:selMon.id})} disabled={!canAwaken}
+                    style={{...FF,padding:'8px 10px',borderRadius:10,border:'none',
+                      background:canAwaken?'linear-gradient(135deg,#bf40ff,#ff6b9d)':'rgba(255,255,255,0.05)',
+                      color:canAwaken?'#fff':'rgba(255,255,255,0.4)',
+                      cursor:canAwaken?'pointer':'default',fontSize:11,fontWeight:900,
+                      display:'flex',justifyContent:'space-between',alignItems:'center',gap:6}}>
+                    <span>🌟 +1</span>
+                    <span style={{fontSize:9,opacity:0.9}}>💠{soulCost}・💰{goldCost}</span>
+                  </button>
+                  {canMax&&<button onClick={()=>d({type:'AWAKEN_MAX',mId:selMon.id})}
+                    style={{...FF,padding:'8px 10px',borderRadius:10,border:'none',
+                      background:'linear-gradient(135deg,#ff6b9d,#ffd700)',
+                      color:'#1a0a00',cursor:'pointer',fontSize:11,fontWeight:900,
+                      display:'flex',justifyContent:'space-between',alignItems:'center',gap:6}}>
+                    <span>🌟 ★{sim_aw}まで</span>
+                    <span style={{fontSize:9,opacity:0.9}}>💠{sim_totalSoul}・💰{sim_totalGold}</span>
+                  </button>}
+                </div>;
+              })()
+              :<div style={{textAlign:'center',marginTop:8,padding:'8px 10px',borderRadius:10,background:'rgba(255,215,0,0.15)',color:'#ffd700',fontSize:12,fontWeight:900}}>🌟 覚醒★5（MAX）</div>}
+          </div>;
+        })()}
       </div>}
 
       {/* ソートコントロール */}
@@ -2677,57 +3239,16 @@ function CollectionScreen({s,d}){
           </button>;
         })}
       </div>
-
-      {/* 選択モンスター詳細 */}
-      {selMon&&<div style={{...CARD,animation:'pop 0.25s ease-out',border:`2px solid ${MONS[selMon.type]?.color}55`,marginBottom:8,padding:12}}>
-        <div style={{display:'flex',gap:10,alignItems:'center',marginBottom:10}}>
-          <EquippedMonster monster={selMon} size={56} anim="float"/>
-          <div style={{flex:1,minWidth:0}}>
-            <div style={{fontWeight:900,fontSize:14}}>{selMon.name}</div>
-            <div style={{display:'flex',gap:4,flexWrap:'wrap',margin:'4px 0'}}><Pill label={selMon.rarity} color={RC[selMon.rarity]}/>{selMon.lb>0&&<Pill label={`★${selMon.lb}/5`} color='#ff9800'/>}<Pill label={`Lv${selMon.level}`} color='#42a5f5'/></div>
-            {(()=>{const st=calcStats(selMon, s.equipInventory);return <div style={{fontSize:10,opacity:0.6}}>HP:{st.maxHp} ATK:{st.atk} DEF:{st.def} SPD:{st.spd} LUK:{st.luk}</div>})()}
-          </div>
-        </div>
-        {(()=>{const sk=SKILLS[MONS[selMon.type]?.skill];if(!sk)return null;return <div style={{background:`${sk.col}22`,border:`1px solid ${sk.col}66`,borderRadius:12,padding:'7px 10px',marginBottom:8}}>
-          <div style={{fontSize:9,color:sk.col,fontWeight:700,marginBottom:2}}>⚡ サブ枠スキル</div>
-          <div style={{fontSize:12,fontWeight:900}}>{sk.icon} {sk.name} <span style={{fontSize:9,opacity:0.6,marginLeft:6}}>CD:{sk.cd}s</span></div>
-          <div style={{fontSize:10,opacity:0.7}}>{sk.desc}</div>
-        </div>})()}
-        {/* 編成ボタン: メイン編成・サブ編成・名前変更 */}
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:6}}>
-          {selMon.id!==s.party.main
-            ?<Btn onClick={()=>d({type:'SET_PARTY',id:selMon.id})} color='linear-gradient(135deg,#bf40ff,#ff6b9d)'>⚔ メインに編成</Btn>
-            :<div style={{...CARD,padding:'8px 0',textAlign:'center',fontSize:11,fontWeight:900,color:'#bf88ff',border:'1px solid #bf88ff66'}}>⚔ 現在メイン</div>}
-          <Btn onClick={()=>{
-            const nm=prompt('新しい名前を入力（最大12文字）',selMon.name);
-            if(nm!==null&&nm.trim()){d({type:'RENAME_MONSTER',mId:selMon.id,name:nm});}
-          }} color='rgba(255,255,255,0.1)' style={{border:'1px solid rgba(255,255,255,0.3)',fontSize:11}}>✏ 名前を変更</Btn>
-        </div>
-        {/* サブ枠への割り当て */}
-        <div style={{...CARD,padding:'8px 10px',marginBottom:6}}>
-          <div style={{fontSize:9,opacity:0.6,marginBottom:5}}>サブ編成（スキル発動枠）</div>
-          <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:5}}>
-            {(s.party.subs||[null,null,null,null]).map((sid,si)=>{
-              const isMe=sid===selMon.id;
-              const occupant=sid?s.monsters.find(m=>m.id===sid):null;
-              const canSet=selMon.id!==s.party.main;
-              return <button key={si} onClick={()=>{
-                if(!canSet)return;
-                if(isMe){d({type:'SET_SUB',slotIdx:si,id:null});}
-                else{d({type:'SET_SUB',slotIdx:si,id:selMon.id});}
-              }} disabled={!canSet}
-                style={{...FF,padding:'5px 2px',borderRadius:8,
-                  border:`1px solid ${isMe?'#bf88ff':occupant?'rgba(255,255,255,0.2)':'rgba(255,255,255,0.1)'}`,
-                  background:isMe?'rgba(191,136,255,0.25)':occupant?'rgba(255,255,255,0.05)':'rgba(255,255,255,0.02)',
-                  cursor:canSet?'pointer':'default',opacity:canSet?1:0.4,fontSize:10,fontWeight:700,color:isMe?'#bf88ff':occupant?'#fff':'rgba(255,255,255,0.4)'}}>
-                {isMe?'★ここ':occupant?occupant.name.substring(0,4):`枠${si+1}`}
-              </button>;
-            })}
-          </div>
-        </div>
-        <Btn onClick={()=>setTab('fusion')} color='linear-gradient(135deg,#ffd700,#ff9800)' text='#1a0a00' style={{fontSize:12}}>⚗ 合成タブへ</Btn>
-      </div>}
     </>}
+
+    {/* ⚔ 編成タブ: メイン1体+サブ4体を自由に編成 */}
+    {tab==='party'&&(()=>{
+      const main=s.monsters.find(m=>m.id===s.party.main);
+      const subs=(s.party.subs||[null,null,null,null]).map(sid=>sid?s.monsters.find(m=>m.id===sid):null);
+      // 編成対象の選択UI（モード: メインを変える / サブN枠を変える / 未選択）
+      const [editSlot,setEditSlot]=[null,null]; // placeholder, useState は外で宣言
+      return <PartyEditor s={s} d={d} main={main} subs={subs}/>;
+    })()}
 
     {tab==='enhance'&&(s.monsters.length>=2
       ?<EnhancePanel s={s} d={d}/>
@@ -2744,11 +3265,361 @@ function CollectionScreen({s,d}){
         <div style={{fontSize:12,fontWeight:700,marginBottom:4}}>合成にはモンスターが2体必要です</div>
         <div style={{fontSize:10,opacity:0.7}}>ガチャで仲間を増やしましょう</div>
       </div>)}
+
+    {/* リネームモーダル */}
+    {renameMon&&<div onClick={()=>setRenameId(null)} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.75)',zIndex:1000,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
+      <div onClick={e=>e.stopPropagation()} style={{...CARD,maxWidth:340,width:'100%',padding:16}}>
+        <div style={{fontSize:12,fontWeight:900,color:'#bf88ff',marginBottom:6}}>✏ 名前を変更</div>
+        <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:12,padding:'8px 0',borderBottom:'1px solid rgba(255,255,255,0.08)'}}>
+          <EquippedMonster monster={renameMon} size={40}/>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:10,opacity:0.55}}>現在の名前</div>
+            <div style={{fontSize:12,fontWeight:700,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{renameMon.name}</div>
+          </div>
+        </div>
+        <div style={{fontSize:10,opacity:0.6,marginBottom:6}}>新しい名前（最大12文字）</div>
+        <input
+          type="text"
+          autoFocus
+          value={renameText}
+          onChange={e=>setRenameText(e.target.value.substring(0,12))}
+          onKeyDown={e=>{if(e.key==='Enter')commitRename();if(e.key==='Escape')setRenameId(null);}}
+          maxLength={12}
+          style={{...FF,width:'100%',padding:'10px 12px',borderRadius:10,border:'1.5px solid #bf88ff66',background:'rgba(255,255,255,0.08)',color:'#fff',fontSize:14,outline:'none',marginBottom:12,boxSizing:'border-box'}}
+        />
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+          <button type="button" onClick={()=>setRenameId(null)} style={{...FF,padding:'10px 0',borderRadius:10,border:'1px solid rgba(255,255,255,0.2)',background:'rgba(255,255,255,0.06)',color:'#fff',cursor:'pointer',fontSize:11,fontWeight:700}}>キャンセル</button>
+          <button type="button" onClick={commitRename} disabled={renameText.trim().length===0} style={{...FF,padding:'10px 0',borderRadius:10,border:'none',background:renameText.trim().length>0?'linear-gradient(135deg,#bf40ff,#ff6b9d)':'rgba(255,255,255,0.05)',color:renameText.trim().length>0?'#fff':'rgba(255,255,255,0.3)',cursor:renameText.trim().length>0?'pointer':'default',fontSize:12,fontWeight:900}}>✏ 決定</button>
+        </div>
+      </div>
+    </div>}
   </div>;
 }
 
-// ─── ENHANCE PANEL（メイン＋素材でレベルアップ）────────────
+// ─── PARTY EDITOR（メイン1体+サブ4体の編成専用画面） ──────
+function PartyEditor({s,d,main,subs}){
+  // editSlot: 'main' / 0-3 (sub slot index) / null
+  const [editSlot,setEditSlot]=useState(null);
+  // 確認モーダル: タップしたモンスターを一旦ここに保持。「編成する」ボタンで確定
+  const [confirmMon,setConfirmMon]=useState(null);
+  // 編成中のID集合（重複防止用）
+  const partyIds=new Set([s.party.main,...(s.party.subs||[]).filter(Boolean)]);
+
+  // 候補リスト（編成中／未編成で分割）
+  const allCands=editSlot!==null
+    ? (editSlot==='main'
+        ? s.monsters // メインは全モンスター候補
+        : s.monsters.filter(m=>m.id!==s.party.main) // サブはメイン以外
+      )
+    : [];
+  // 編成中（メイン or サブのどこかに入っている）と未編成に分ける
+  const inPartyCands=allCands.filter(m=>partyIds.has(m.id));
+  const notInPartyCands=allCands.filter(m=>!partyIds.has(m.id));
+
+  function confirmPick(){
+    if(!confirmMon)return;
+    if(editSlot==='main'){
+      d({type:'SET_PARTY',id:confirmMon.id});
+    } else if(typeof editSlot==='number'){
+      d({type:'SET_SUB',slotIdx:editSlot,id:confirmMon.id});
+    }
+    setConfirmMon(null);
+    setEditSlot(null);
+  }
+  function clearSlot(){
+    if(typeof editSlot==='number'){
+      d({type:'SET_SUB',slotIdx:editSlot,id:null});
+      setEditSlot(null);
+    }
+  }
+
+  // 各モンスターの現在の編成位置を返す（'main' / 'sub1〜4' / null）
+  function partyRoleOf(monId){
+    if(s.party.main===monId)return 'main';
+    const si=(s.party.subs||[]).indexOf(monId);
+    if(si>=0)return `sub${si+1}`;
+    return null;
+  }
+
+  // 編成中表示
+  if(editSlot===null){
+    return <div>
+      <div style={{...CARD,padding:'10px 12px',marginBottom:10,background:'linear-gradient(135deg,rgba(191,64,255,0.08),rgba(255,107,157,0.04))',border:'1px solid #bf40ff44'}}>
+        <div style={{fontSize:11,fontWeight:900,color:'#bf40ff',marginBottom:3}}>⚔ パーティ編成</div>
+        <div style={{fontSize:10,opacity:0.75,lineHeight:1.5}}>メイン1体+サブ4体を編成。戦闘ではメインが攻撃、サブはゲージが満タンでスキルを自動発動します。</div>
+      </div>
+
+      {/* メイン枠（大きく） */}
+      <div style={{fontSize:10,opacity:0.6,fontWeight:700,marginBottom:5}}>⚔ メイン</div>
+      <button onClick={()=>setEditSlot('main')} style={{...FF,...CARD,width:'100%',padding:'12px 14px',cursor:'pointer',border:'2px solid #bf40ff66',background:'linear-gradient(135deg,rgba(191,64,255,0.10),rgba(255,255,255,0.03))',marginBottom:12,display:'flex',alignItems:'center',gap:12,textAlign:'left',color:'#fff'}}>
+        {main
+          ?<>
+            <div style={{animation:'glow 2s ease-in-out infinite'}}><EquippedMonster monster={main} size={56} anim="float"/></div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontWeight:900,fontSize:14}}>{main.name}</div>
+              <div style={{display:'flex',gap:4,flexWrap:'wrap',margin:'3px 0'}}><Pill label={main.rarity} color={RC[main.rarity]}/>{main.lb>0&&<Pill label={`★${main.lb}`} color='#ff9800'/>}<Pill label={`Lv${main.level}`} color='#42a5f5'/></div>
+              {(()=>{const st=calcStats(main,s.equipInventory,s.facilities);return <div style={{fontSize:9,opacity:0.6}}>HP:{st.maxHp} ATK:{st.atk} DEF:{st.def}</div>})()}
+            </div>
+            <div style={{fontSize:18,opacity:0.6}}>🔄</div>
+          </>
+          :<div style={{flex:1,textAlign:'center',padding:'12px 0',opacity:0.5}}>＋ メインモンスターを選択</div>}
+      </button>
+
+      {/* サブ枠4つ */}
+      <div style={{fontSize:10,opacity:0.6,fontWeight:700,marginBottom:5}}>🤝 サブ（スキル発動枠）</div>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6,marginBottom:10}}>
+        {subs.map((sm,si)=>{
+          const sk=sm?SKILLS[MONS[sm.type]?.skill]:null;
+          return <button key={si} onClick={()=>setEditSlot(si)} style={{...FF,...CARD,padding:'9px 10px',cursor:'pointer',display:'flex',alignItems:'center',gap:8,textAlign:'left',color:'#fff',
+            border:sm?`1.5px solid ${sk?.col||'rgba(255,255,255,0.2)'}55`:'1.5px dashed rgba(255,255,255,0.15)',
+            background:sm?`linear-gradient(135deg,${sk?.col||'#888'}11,rgba(255,255,255,0.03))`:'rgba(255,255,255,0.02)'}}>
+            {sm?<>
+              <EquippedMonster monster={sm} size={36}/>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:10,fontWeight:900,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{sm.name}</div>
+                {sk&&<div style={{fontSize:8,color:sk.col,marginTop:1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{sk.icon} {sk.name}{(sm.skillLv||1)>1&&<span style={{color:'#ffd700'}}> Lv{sm.skillLv}</span>}</div>}
+                <div style={{fontSize:8,opacity:0.55,marginTop:1}}>Lv{sm.level}</div>
+              </div>
+            </>:<>
+              <div style={{width:36,height:36,display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,opacity:0.3}}>＋</div>
+              <div style={{flex:1,textAlign:'center',fontSize:10,opacity:0.4}}>サブ枠 {si+1}</div>
+            </>}
+          </button>;
+        })}
+      </div>
+
+      <div style={{...CARD,padding:'7px 10px',fontSize:9,opacity:0.65,lineHeight:1.5}}>
+        💡 タップして編成 / 戦闘ではメインが攻撃しサブがスキルで援護 / 同じモンスターは複数枠に同時編成できません
+      </div>
+    </div>;
+  }
+
+  // 候補カード描画関数
+  function CandidateCard({m,compact}){
+    const isCurrent=(editSlot==='main'&&m.id===s.party.main)||(typeof editSlot==='number'&&s.party.subs?.[editSlot]===m.id);
+    const role=partyRoleOf(m.id);
+    const sk=SKILLS[MONS[m.type]?.skill];
+    const roleLabel=role==='main'?'⚔':role?role.replace('sub','S'):null;
+    return <button onClick={()=>setConfirmMon(m)} disabled={isCurrent}
+      style={{...FF,...CARD,padding:compact?'5px 3px':'7px 5px',cursor:isCurrent?'default':'pointer',textAlign:'center',
+        border:isCurrent?'2px solid #ffd700':role?'1.5px solid #bf40ff88':`1px solid ${RC[m.rarity]}44`,
+        background:isCurrent?'rgba(255,215,0,0.15)':role?'linear-gradient(135deg,rgba(191,64,255,0.10),rgba(255,255,255,0.03))':'rgba(255,255,255,0.03)',
+        opacity:isCurrent?0.75:1,position:'relative',color:'#fff'}}>
+      {roleLabel&&<div style={{position:'absolute',top:1,right:2,fontSize:compact?6:7,color:isCurrent?'#ffd700':'#bf88ff',fontWeight:900,whiteSpace:'nowrap'}}>{isCurrent?'★':roleLabel}</div>}
+      <EquippedMonster monster={m} size={compact?28:36}/>
+      <div style={{fontSize:compact?8:9,fontWeight:900,marginTop:compact?1:3,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',color:MONS[m.type]?.color}}>{m.name}</div>
+      {!compact&&<div style={{fontSize:7,opacity:0.55,marginTop:1}}>Lv{m.level} {m.rarity}{m.lb>0?'★'+m.lb:''}</div>}
+      {compact&&<div style={{fontSize:7,opacity:0.55,marginTop:0}}>Lv{m.level}</div>}
+      {sk&&!compact&&<div style={{fontSize:8,color:sk.col,marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{sk.icon}{(m.skillLv||1)>1?<span style={{color:'#ffd700'}}> L{m.skillLv}</span>:''}</div>}
+      {sk&&compact&&<div style={{fontSize:10,marginTop:1}}>{sk.icon}</div>}
+    </button>;
+  }
+
+  // 確認モーダル
+  const confirmModal=confirmMon&&(()=>{
+    const sk=SKILLS[MONS[confirmMon.type]?.skill];
+    const sl=confirmMon.skillLv||1;
+    const curMul=1+(sl-1)*0.12;
+    const st=calcStats(confirmMon,s.equipInventory,s.facilities);
+    const curRole=partyRoleOf(confirmMon.id);
+    return <div onClick={()=>setConfirmMon(null)} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.75)',zIndex:1000,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
+      <div onClick={e=>e.stopPropagation()} style={{...CARD,maxWidth:380,width:'100%',maxHeight:'85vh',overflow:'auto',padding:14}}>
+        <div style={{fontSize:11,opacity:0.6,marginBottom:6,fontWeight:700}}>
+          {editSlot==='main'?'⚔ メインに編成':`🤝 サブ枠${editSlot+1}に編成`}
+        </div>
+        {/* モンスター情報 */}
+        <div style={{display:'flex',alignItems:'center',gap:12,padding:'10px 0 12px',borderBottom:'1px solid rgba(255,255,255,0.08)',marginBottom:10}}>
+          <EquippedMonster monster={confirmMon} size={64} anim="float"/>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontWeight:900,fontSize:14}}>{confirmMon.name}</div>
+            <div style={{display:'flex',gap:4,flexWrap:'wrap',margin:'4px 0'}}>
+              <Pill label={confirmMon.rarity} color={RC[confirmMon.rarity]}/>
+              {confirmMon.lb>0&&<Pill label={`★${confirmMon.lb}`} color='#ff9800'/>}
+              {(confirmMon.awaken||0)>0&&<Pill label={`覚★${confirmMon.awaken}`} color='#bf40ff'/>}
+              <Pill label={`Lv${confirmMon.level}`} color='#42a5f5'/>
+            </div>
+            <div style={{fontSize:10,opacity:0.7}}>HP:{st.maxHp} ATK:{st.atk} DEF:{st.def}<br/>SPD:{st.spd} LUK:{st.luk}</div>
+          </div>
+        </div>
+        {/* 現在の編成位置を表示 */}
+        {curRole&&<div style={{...CARD,padding:'6px 10px',marginBottom:8,background:'rgba(255,152,0,0.08)',border:'1px solid #ff980066',fontSize:10,color:'#ff9800'}}>
+          💡 現在<b>{curRole==='main'?'メイン':`サブ枠${curRole.replace('sub','')}`}</b>に編成中。ここに変更すると元の枠は空きになります。
+        </div>}
+        {/* スキル詳細 */}
+        {sk&&<div style={{background:`${sk.col}15`,border:`1px solid ${sk.col}55`,borderRadius:10,padding:'10px 12px',marginBottom:10}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:6,marginBottom:4}}>
+            <div style={{fontSize:12,fontWeight:900,color:sk.col}}>{sk.icon} {sk.name}</div>
+            <div style={{display:'flex',gap:4,flexShrink:0}}>
+              <Pill label={`CD ${sk.cd}s`} color='#42a5f5'/>
+              <Pill label={sk.type==='atk'?'攻撃':sk.type==='aoe'?'範囲':sk.type==='heal'?'回復':sk.type==='drain'?'吸収':sk.type==='luk'?'運':sk.type==='buf_atk'?'攻バフ':'防バフ'} color={sk.col}/>
+            </div>
+          </div>
+          <div style={{fontSize:10,opacity:0.85,marginTop:3,lineHeight:1.4}}>{sk.desc}</div>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:6,padding:'5px 8px',background:'rgba(0,0,0,0.25)',borderRadius:6}}>
+            <span style={{fontSize:9,opacity:0.65}}>威力倍率（スキルLv{sl}）</span>
+            <span style={{fontSize:11,fontWeight:900,color:'#ffd700'}}>×{curMul.toFixed(2)}</span>
+          </div>
+        </div>}
+        {!sk&&<div style={{...CARD,padding:'10px 12px',marginBottom:10,fontSize:10,opacity:0.5,textAlign:'center'}}>このモンスターにはスキルがありません</div>}
+        {/* 編成・キャンセル */}
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+          <button onClick={()=>setConfirmMon(null)} style={{...FF,padding:'10px 0',borderRadius:10,border:'1px solid rgba(255,255,255,0.2)',background:'rgba(255,255,255,0.06)',color:'#fff',cursor:'pointer',fontSize:11,fontWeight:700}}>キャンセル</button>
+          <button onClick={confirmPick} style={{...FF,padding:'10px 0',borderRadius:10,border:'none',background:'linear-gradient(135deg,#bf40ff,#ff6b9d)',color:'#fff',cursor:'pointer',fontSize:12,fontWeight:900}}>{editSlot==='main'?'⚔':'🤝'} 編成する</button>
+        </div>
+      </div>
+    </div>;
+  })();
+
+  // 候補選択UI
+  return <div>
+    <div style={{...CARD,padding:'10px 12px',marginBottom:10,display:'flex',justifyContent:'space-between',alignItems:'center',background:'rgba(191,64,255,0.06)',border:'1px solid #bf40ff66'}}>
+      <div>
+        <div style={{fontSize:11,fontWeight:900,color:'#bf40ff'}}>
+          {editSlot==='main'?'⚔ メインに編成するモンスターを選択':`🤝 サブ枠${editSlot+1}に編成するモンスターを選択`}
+        </div>
+        <div style={{fontSize:9,opacity:0.6,marginTop:2}}>候補をタップ → 確認画面で編成</div>
+      </div>
+      <button onClick={()=>setEditSlot(null)} style={{...FF,padding:'6px 10px',background:'rgba(255,255,255,0.1)',border:'1px solid rgba(255,255,255,0.2)',borderRadius:8,cursor:'pointer',fontSize:10,color:'#fff'}}>戻る</button>
+    </div>
+
+    {/* 空きにする（サブのみ） */}
+    {typeof editSlot==='number'&&subs[editSlot]&&<button onClick={clearSlot} style={{...FF,width:'100%',padding:'9px 10px',marginBottom:10,borderRadius:10,border:'1px solid #ef535066',background:'rgba(239,83,80,0.08)',color:'#ef5350',cursor:'pointer',fontSize:11,fontWeight:900}}>
+      ✕ この枠を空きにする
+    </button>}
+
+    {/* 編成中セクション（上段、4列コンパクト）*/}
+    {inPartyCands.length>0&&<div style={{marginBottom:12}}>
+      <div style={{fontSize:10,opacity:0.6,fontWeight:700,marginBottom:5,display:'flex',justifyContent:'space-between'}}>
+        <span>⚔ 編成中（{inPartyCands.length}/5）</span>
+        <span style={{fontSize:8,opacity:0.5}}>※ 他枠から移動できます</span>
+      </div>
+      <div style={{padding:'6px',background:'linear-gradient(135deg,rgba(191,64,255,0.06),rgba(255,255,255,0.02))',borderRadius:10,border:'1px solid rgba(191,64,255,0.25)'}}>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:4}}>
+          {inPartyCands.map(m=><CandidateCard key={m.id} m={m} compact={true}/>)}
+        </div>
+      </div>
+    </div>}
+
+    {/* 未編成セクション（下段）*/}
+    <div style={{fontSize:10,opacity:0.6,fontWeight:700,marginBottom:5}}>📦 未編成（{notInPartyCands.length}体）</div>
+    {notInPartyCands.length>0
+      ?<div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:5}}>
+        {notInPartyCands.map(m=><CandidateCard key={m.id} m={m}/>)}
+      </div>
+      :<div style={{...CARD,padding:'20px 14px',textAlign:'center',opacity:0.5,fontSize:11}}>未編成のモンスターがいません</div>}
+
+    {confirmModal}
+  </div>;
+}
+
+// ─── SKILL ENHANCE LIST（スキル強化用、タップで詳細展開） ──
+function SkillEnhanceList({s,d}){
+  const [expandedId,setExpandedId]=useState(null);
+  const stoneHave=s.materials.skill_stone||0;
+  // ソート: スキルあり&強化可能なものを上に
+  const list=s.monsters.filter(m=>SKILLS[MONS[m.type]?.skill]).slice().sort((a,b)=>{
+    const sa=a.skillLv||1, sb=b.skillLv||1;
+    const costA=2+sa, costB=2+sb;
+    const canA=sa<5&&stoneHave>=costA&&s.coins>=800*sa;
+    const canB=sb<5&&stoneHave>=costB&&s.coins>=800*sb;
+    if(canA!==canB)return canA?-1:1; // 強化可能なものを上に
+    if(sa!==sb)return sb-sa; // Lv高い順
+    return 0;
+  });
+  return <div>
+    <div style={{...CARD,padding:'10px 12px',marginBottom:8,background:'rgba(255,215,0,0.05)',border:'1px solid #ffd70033'}}>
+      <div style={{fontSize:11,fontWeight:900,color:'#ffd700',marginBottom:3}}>⚡ サブ枠スキルを強化</div>
+      <div style={{fontSize:10,opacity:0.75,lineHeight:1.5}}>各モンスターをタップで詳細表示。Lv1〜5の各段階で威力 ×1.0〜1.48に強化されます。<br/>📜 スキルのいしはボス戦・雑貨商などで入手。</div>
+    </div>
+    <div style={{display:'flex',flexDirection:'column',gap:6}}>
+      {list.map(m=>{
+        const sk=SKILLS[MONS[m.type]?.skill];
+        const sl=m.skillLv||1;
+        const stoneCost=2+sl, goldCost=800*sl;
+        const canUp=sl<5&&stoneHave>=stoneCost&&s.coins>=goldCost;
+        const isOpen=expandedId===m.id;
+        const curMul=1+(sl-1)*0.12;
+        const nextMul=1+sl*0.12;
+        // スキルタイプ説明
+        const typeLabel={
+          atk:'攻撃: 対象敵にATK×倍率',
+          aoe:'範囲攻撃: 全敵にATK×倍率',
+          heal:'回復: メインHP最大値×倍率を回復',
+          buf_atk:'バフ: 次のメイン攻撃ATK×倍率',
+          buf_def:'バフ: 反撃ダメージ軽減（×倍率）',
+          luk:'バフ: クリ率+%（次の攻撃）',
+          drain:'吸収: 攻撃しダメージの30%回復',
+        }[sk.type]||'';
+        return <div key={m.id} style={{...CARD,padding:0,border:canUp?'1px solid #ffd70066':'1px solid rgba(255,255,255,0.08)',background:canUp?'rgba(255,215,0,0.04)':undefined,overflow:'hidden'}}>
+          {/* ヘッダ（常時表示、タップで展開） */}
+          <button onClick={()=>setExpandedId(isOpen?null:m.id)} style={{...FF,width:'100%',padding:'8px 10px',display:'flex',alignItems:'center',gap:8,background:'none',border:'none',cursor:'pointer',color:'#fff',textAlign:'left'}}>
+            <EquippedMonster monster={m} size={40}/>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:11,fontWeight:900,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{m.name}</div>
+              <div style={{fontSize:9,color:sk.col,marginTop:1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{sk.icon} {sk.name} <span style={{color:'#ffd700'}}>Lv{sl}/5</span></div>
+            </div>
+            <div style={{fontSize:14,opacity:0.5,transform:isOpen?'rotate(90deg)':'rotate(0)',transition:'transform 0.2s'}}>▶</div>
+          </button>
+          {/* 展開部分（詳細） */}
+          {isOpen&&<div style={{padding:'4px 10px 10px',borderTop:'1px solid rgba(255,255,255,0.06)'}}>
+            <div style={{background:`${sk.col}15`,border:`1px solid ${sk.col}55`,borderRadius:10,padding:'8px 10px',marginBottom:8}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:6}}>
+                <div style={{fontSize:11,fontWeight:900,color:sk.col}}>{sk.icon} {sk.name}</div>
+                <div style={{display:'flex',gap:4,flexShrink:0}}>
+                  <Pill label={`CD ${sk.cd}s`} color='#42a5f5'/>
+                  <Pill label={sk.type==='atk'?'攻撃':sk.type==='aoe'?'範囲':sk.type==='heal'?'回復':sk.type==='drain'?'吸収':sk.type==='luk'?'運':sk.type==='buf_atk'?'攻撃バフ':'防御バフ'} color={sk.col}/>
+                </div>
+              </div>
+              <div style={{fontSize:10,opacity:0.8,marginTop:4,lineHeight:1.4}}>{sk.desc}</div>
+              <div style={{fontSize:9,opacity:0.55,marginTop:3,fontStyle:'italic'}}>{typeLabel}</div>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:6,padding:'5px 8px',background:'rgba(0,0,0,0.2)',borderRadius:6}}>
+                <span style={{fontSize:9,opacity:0.65}}>現在の威力倍率</span>
+                <span style={{fontSize:11,fontWeight:900,color:'#ffd700'}}>×{curMul.toFixed(2)}{sl<5&&<span style={{color:'#66bb6a',marginLeft:4}}>→ ×{nextMul.toFixed(2)}</span>}</span>
+              </div>
+            </div>
+            {/* 強化ボタン */}
+            {sl>=5
+              ?<div style={{textAlign:'center',padding:'10px',borderRadius:10,background:'rgba(255,215,0,0.15)',color:'#ffd700',fontSize:12,fontWeight:900}}>⚡ スキルLv5（MAX）</div>
+              :(()=>{
+                // MAX強化のシミュレーション（あと何段階上げられるか）
+                let sim_sl=sl, sim_stone=stoneHave, sim_coin=s.coins, sim_steps=0, sim_totalStone=0, sim_totalGold=0;
+                while(sim_sl<5){
+                  const sc=2+sim_sl, gc=800*sim_sl;
+                  if(sim_stone<sc||sim_coin<gc)break;
+                  sim_stone-=sc;sim_coin-=gc;sim_totalStone+=sc;sim_totalGold+=gc;sim_sl++;sim_steps++;
+                }
+                const canMax=sim_steps>1; // 2段階以上上がる場合のみMAXボタンを意味あるものに
+                return <div style={{display:'grid',gridTemplateColumns:canMax?'1fr 1fr':'1fr',gap:6}}>
+                  <button onClick={()=>d({type:'SKILL_UP',mId:m.id})} disabled={!canUp}
+                    style={{...FF,width:'100%',padding:'10px 12px',borderRadius:10,border:'none',
+                      background:canUp?'linear-gradient(135deg,#ffd700,#ff9800)':'rgba(255,255,255,0.05)',
+                      color:canUp?'#1a0a00':'rgba(255,255,255,0.4)',
+                      cursor:canUp?'pointer':'default',fontSize:11,fontWeight:900,
+                      display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                    <span>⚡ +1</span>
+                    <span style={{fontSize:9,opacity:0.9}}>📜{stoneCost}・💰{goldCost}</span>
+                  </button>
+                  {canMax&&<button onClick={()=>d({type:'SKILL_UP_MAX',mId:m.id})}
+                    style={{...FF,width:'100%',padding:'10px 12px',borderRadius:10,border:'none',
+                      background:'linear-gradient(135deg,#ff6b9d,#bf40ff)',
+                      color:'#fff',cursor:'pointer',fontSize:11,fontWeight:900,
+                      display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                    <span>⚡ Lv{sim_sl} まで</span>
+                    <span style={{fontSize:9,opacity:0.9}}>📜{sim_totalStone}・💰{sim_totalGold}</span>
+                  </button>}
+                </div>;
+              })()
+            }
+          </div>}
+        </div>;
+      })}
+    </div>
+  </div>;
+}
+
+// ─── ENHANCE PANEL（強化所: 喰い合成 / スキル強化 / 覚醒の3機能） ────
 function EnhancePanel({s,d}){
+  const [mode,setMode]=useState('feed'); // feed=喰い合成 / skill=スキル強化 / awaken=覚醒
   const [mainId,setMainId]=useState(s.party.main);
   const [matIds,setMatIds]=useState([]);
   const [pickingMain,setPickingMain]=useState(false);
@@ -2757,7 +3628,6 @@ function EnhancePanel({s,d}){
   const candidates=s.monsters.filter(m=>m.id!==main.id);
   const matSet=new Set(matIds);
   const selectedMats=s.monsters.filter(m=>matSet.has(m.id));
-  // XP計算
   const XP_BY_R={C:20,R:50,SR:150,UR:400,LR:1000};
   let totalXp=0;
   for(const mat of selectedMats){
@@ -2766,103 +3636,195 @@ function EnhancePanel({s,d}){
     const sameType=mat.type===main.type?1.3:1.0;
     totalXp+=Math.floor(base*lvBonus*sameType);
   }
-  // 予想Lv
-  let pLv=main.level;let pXp=main.xp+totalXp;let lvUps=0;
-  while(pXp>=100*pLv&&lvUps<500){pXp-=100*pLv;pLv++;lvUps++;}
-  function toggleMat(id){setMatIds(matSet.has(id)?matIds.filter(x=>x!==id):[...matIds,id]);}
-  function selectLowRare(){setMatIds(candidates.filter(m=>m.rarity==='C'||m.rarity==='R').map(m=>m.id));}
-  function selectAll(){setMatIds(candidates.map(m=>m.id));}
-  function clearSel(){setMatIds([]);}
-  function execute(){if(matIds.length===0)return;d({type:'LEVEL_UP_FUSE',mainId:main.id,matIds});setMatIds([]);}
-  function switchMain(newId){setMainId(newId);setMatIds(matIds.filter(x=>x!==newId));setPickingMain(false);}
+  const stoneHave=s.materials.skill_stone||0;
+  const soulHave=s.materials.awaken_soul||0;
 
-  if(pickingMain){
-    return <div style={{...CARD,padding:12}}>
-      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
-        <div style={{fontSize:12,fontWeight:900}}>メインを選択</div>
-        <button onClick={()=>setPickingMain(false)} style={{...FF,background:'none',border:'none',color:'#bf88ff',cursor:'pointer',fontSize:11}}>キャンセル</button>
-      </div>
-      <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:5,maxHeight:380,overflowY:'auto'}}>
-        {s.monsters.map(m=>{
-          const mi=MONS[m.type];const isCurrent=m.id===main.id;const isParty=m.id===s.party.main;
-          return <button key={m.id} onClick={()=>switchMain(m.id)} style={{...FF,padding:5,textAlign:'center',cursor:'pointer',borderRadius:10,border:`2px solid ${isCurrent?'#bf88ff':isParty?'#bf88ff88':RC[m.rarity]+'44'}`,background:isCurrent?'rgba(191,136,255,0.15)':'rgba(255,255,255,0.03)',position:'relative'}}>
-            {isParty&&<div style={{position:'absolute',top:1,right:2,fontSize:7,color:'#bf88ff',fontWeight:900}}>⚔</div>}
-            <EquippedMonster monster={m} size={36} anim="none"/>
-            <div style={{fontSize:8,fontWeight:700,marginTop:2,color:mi.color,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{m.name}</div>
-            <div style={{fontSize:8,opacity:0.55}}>Lv{m.level}{m.lb>0?' ★'+m.lb:''}</div>
-          </button>;
-        })}
-      </div>
-    </div>;
-  }
-
-  const mi=MONS[main.type];
   return <div>
-    {/* メインモンスター */}
-    <div style={{...CARD,padding:12,marginBottom:10,background:`linear-gradient(135deg,${mi.bg}22,rgba(255,255,255,0.04))`,border:`2px solid ${mi.color}44`}}>
-      <div style={{fontSize:10,fontWeight:700,opacity:0.6,marginBottom:6}}>💪 メインモンスター（強化対象）</div>
-      <div style={{display:'flex',gap:10,alignItems:'center'}}>
-        <EquippedMonster monster={main} size={52} anim="float"/>
-        <div style={{flex:1,minWidth:0}}>
-          <div style={{fontWeight:900,fontSize:13,color:mi.color}}>{main.name}{main.id===s.party.main&&<span style={{fontSize:9,color:'#bf88ff',marginLeft:6}}>⚔ PARTY</span>}</div>
-          <div style={{display:'flex',gap:4,flexWrap:'wrap',margin:'3px 0'}}><Pill label={main.rarity} color={RC[main.rarity]}/>{main.lb>0&&<Pill label={`★${main.lb}`} color='#ff9800'/>}<Pill label={`Lv${main.level}`} color='#42a5f5'/></div>
-          <Bar val={main.xp} max={100*main.level} color='#bf88ff' label={`EXP ${main.xp}/${100*main.level}`}/>
-        </div>
+    {/* 素材所持バナー */}
+    <div style={{...CARD,marginBottom:10,padding:'8px 12px',display:'flex',justifyContent:'space-around',background:'linear-gradient(135deg,rgba(255,215,0,0.08),rgba(191,64,255,0.06))'}}>
+      <div style={{textAlign:'center'}}>
+        <div style={{fontSize:9,opacity:0.7}}>📜 スキルのいし</div>
+        <div style={{fontSize:18,fontWeight:900,color:'#ffd700'}}>×{stoneHave}</div>
       </div>
-      <button onClick={()=>setPickingMain(true)} style={{...FF,marginTop:8,width:'100%',padding:'6px 0',borderRadius:9,border:'1px solid rgba(255,255,255,0.15)',background:'rgba(255,255,255,0.04)',color:'#fff',cursor:'pointer',fontSize:11,fontWeight:700}}>🔄 メインを変える</button>
+      <div style={{width:1,background:'rgba(255,255,255,0.1)'}}/>
+      <div style={{textAlign:'center'}}>
+        <div style={{fontSize:9,opacity:0.7}}>💠 たましいのかけら</div>
+        <div style={{fontSize:18,fontWeight:900,color:'#bf40ff'}}>×{soulHave}</div>
+      </div>
     </div>
 
-    {/* 一括選択ボタン */}
-    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6,marginBottom:8}}>
-      <button onClick={selectLowRare} style={{...FF,padding:'7px 0',borderRadius:10,border:'1px solid rgba(33,150,243,0.4)',background:'rgba(33,150,243,0.08)',color:'#42a5f5',cursor:'pointer',fontSize:10,fontWeight:700}}>C/R全選択</button>
-      <button onClick={selectAll} style={{...FF,padding:'7px 0',borderRadius:10,border:'1px solid rgba(255,255,255,0.15)',background:'rgba(255,255,255,0.04)',color:'#fff',cursor:'pointer',fontSize:10,fontWeight:700}}>全選択</button>
-      <button onClick={clearSel} disabled={matIds.length===0} style={{...FF,padding:'7px 0',borderRadius:10,border:'1px solid rgba(239,83,80,0.4)',background:matIds.length>0?'rgba(239,83,80,0.08)':'rgba(255,255,255,0.04)',color:matIds.length>0?'#ef5350':'rgba(255,255,255,0.3)',cursor:matIds.length>0?'pointer':'default',fontSize:10,fontWeight:700}}>クリア</button>
+    {/* モード切替 */}
+    <div style={{display:'flex',gap:4,marginBottom:10,background:'rgba(255,255,255,0.04)',borderRadius:12,padding:3}}>
+      {[['feed','🍖 経験値','喰わせる'],['skill','⚡ スキル強化','📜消費'],['awaken','🌟 覚醒','💠消費']].map(([k,l,sub])=>(
+        <button key={k} onClick={()=>setMode(k)} style={{...FF,flex:1,padding:'7px 4px',borderRadius:10,border:'none',cursor:'pointer',background:mode===k?'linear-gradient(135deg,#bf88ff,#7c3aed)':'transparent',color:mode===k?'#fff':'rgba(255,255,255,0.5)',transition:'all 0.18s'}}>
+          <div style={{fontSize:11,fontWeight:900}}>{l}</div>
+          <div style={{fontSize:8,opacity:0.8,marginTop:1}}>{sub}</div>
+        </button>
+      ))}
     </div>
 
-    {/* 素材グリッド */}
-    <div style={{fontSize:10,opacity:0.6,marginBottom:6,display:'flex',justifyContent:'space-between'}}>
-      <span>素材モンスター（{matIds.length}/{candidates.length}選択中）</span>
-      {selectedMats.some(m=>m.id===s.party.main)&&<span style={{color:'#ef5350'}}>⚠ パーティを選んでいます</span>}
-    </div>
-    <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:5,marginBottom:10,maxHeight:280,overflowY:'auto'}}>
-      {candidates.map(m=>{
-        const mi=MONS[m.type];const sel=matSet.has(m.id);const isParty=m.id===s.party.main;const sameType=m.type===main.type;
-        return <button key={m.id} onClick={()=>toggleMat(m.id)} style={{...FF,padding:4,textAlign:'center',cursor:'pointer',borderRadius:10,border:`2px solid ${sel?'#66bb6a':isParty?'#ef535088':sameType?'#ff9800aa':RC[m.rarity]+'44'}`,background:sel?'rgba(102,187,106,0.15)':'rgba(255,255,255,0.03)',position:'relative'}}>
-          {sel&&<div style={{position:'absolute',top:2,right:3,fontSize:10,color:'#66bb6a',fontWeight:900}}>✓</div>}
-          {isParty&&!sel&&<div style={{position:'absolute',top:1,left:2,fontSize:7,color:'#ef5350',fontWeight:900}}>⚔</div>}
-          {sameType&&!sel&&!isParty&&<div style={{position:'absolute',top:1,left:2,fontSize:6,color:'#ff9800',fontWeight:900}}>+30%</div>}
-          <EquippedMonster monster={m} size={32} anim="none"/>
-          <div style={{fontSize:8,fontWeight:700,color:mi.color,marginTop:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{m.name}</div>
-          <div style={{display:'flex',justifyContent:'center',alignItems:'center',gap:2,marginTop:1}}>
-            <span style={{fontSize:7,fontWeight:900,color:RC[m.rarity]}}>{m.rarity}</span>
-            <span style={{fontSize:7,opacity:0.5}}>Lv{m.level}</span>
-          </div>
-        </button>;
-      })}
-    </div>
+    {/* スキル強化モード */}
+    {mode==='skill'&&(()=>{
+      // expandedSkillId: 詳細を開いているモンスターID
+      return <SkillEnhanceList s={s} d={d}/>;
+    })()}
 
-    {/* XP予想 */}
-    {matIds.length>0&&<div style={{...CARD,padding:12,marginBottom:10,border:'1px solid #66bb6a44',background:'linear-gradient(135deg,rgba(102,187,106,0.08),rgba(255,255,255,0.03))'}}>
-      <div style={{fontSize:10,fontWeight:700,opacity:0.6,marginBottom:6}}>📈 予想結果</div>
-      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
-        <div style={{fontSize:11}}>獲得XP</div>
-        <div style={{fontSize:18,fontWeight:900,color:'#66bb6a'}}>+{totalXp}</div>
+    {/* 覚醒モード */}
+    {mode==='awaken'&&<div>
+      <div style={{...CARD,padding:'10px 12px',marginBottom:8,background:'rgba(191,64,255,0.06)',border:'1px solid #bf40ff44'}}>
+        <div style={{fontSize:11,fontWeight:900,color:'#bf40ff',marginBottom:3}}>🌟 覚醒で限界突破★5の先へ</div>
+        <div style={{fontSize:10,opacity:0.75,lineHeight:1.5}}>限界突破★5に達したモンスターのみ覚醒可能。覚醒★1〜5で全ステ+18%ずつ強化。<br/>💠 たましいのかけらは4章以降のボスでドロップします。</div>
       </div>
-      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-        <div style={{fontSize:11}}>レベル</div>
-        <div style={{fontSize:13,fontWeight:900}}>{main.level}{lvUps>0?<span style={{color:'#ffd700'}}> → {pLv}（+{lvUps}）</span>:<span style={{opacity:0.5,fontWeight:400}}> （変動なし）</span>}</div>
-      </div>
+      {(()=>{
+        const targets=s.monsters.filter(m=>(m.lb||0)>=5);
+        if(targets.length===0)return <div style={{...CARD,textAlign:'center',padding:'24px 12px',opacity:0.6,fontSize:11}}>限界突破★5のモンスターがいません<br/><span style={{fontSize:9,opacity:0.7}}>合成タブで★5まで突破しましょう</span></div>;
+        return <div style={{display:'flex',flexDirection:'column',gap:6}}>
+          {targets.map(m=>{
+            const aw=m.awaken||0;
+            const soulCost=3+aw*2, goldCost=5000*(aw+1);
+            const canAwaken=aw<5&&soulHave>=soulCost&&s.coins>=goldCost;
+            return <div key={m.id} style={{...CARD,padding:'8px 10px',display:'flex',alignItems:'center',gap:8,border:canAwaken?'1px solid #bf40ff88':'1px solid rgba(255,255,255,0.08)',background:canAwaken?'rgba(191,64,255,0.06)':undefined}}>
+              <EquippedMonster monster={m} size={40}/>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:11,fontWeight:900,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{m.name}</div>
+                <div style={{fontSize:9,color:'#bf40ff',marginTop:1}}>{aw>0?`🌟 覚醒★${aw}/5`:'限界突破★5（未覚醒）'}</div>
+              </div>
+              {aw>=5
+                ?<div style={{fontSize:10,color:'#ffd700',fontWeight:900,padding:'6px 10px',background:'rgba(255,215,0,0.15)',borderRadius:8}}>MAX</div>
+                :(()=>{
+                  // MAXシミュレーション
+                  let sim_aw=aw, sim_soul=soulHave, sim_coin=s.coins, sim_steps=0, sim_totalSoul=0, sim_totalGold=0;
+                  while(sim_aw<5){
+                    const sc=3+sim_aw*2, gc=5000*(sim_aw+1);
+                    if(sim_soul<sc||sim_coin<gc)break;
+                    sim_soul-=sc;sim_coin-=gc;sim_totalSoul+=sc;sim_totalGold+=gc;sim_aw++;sim_steps++;
+                  }
+                  const canMax=sim_steps>1;
+                  return <div style={{display:'flex',flexDirection:'column',gap:4,minWidth:90}}>
+                    <button onClick={()=>d({type:'AWAKEN',mId:m.id})} disabled={!canAwaken}
+                      style={{...FF,padding:'5px 8px',borderRadius:8,border:'none',
+                        background:canAwaken?'linear-gradient(135deg,#bf40ff,#ff6b9d)':'rgba(255,255,255,0.05)',
+                        color:canAwaken?'#fff':'rgba(255,255,255,0.4)',
+                        cursor:canAwaken?'pointer':'default',fontSize:10,fontWeight:900}}>
+                      <div>★+1</div>
+                      <div style={{fontSize:8,marginTop:1}}>💠{soulCost} 💰{goldCost}</div>
+                    </button>
+                    {canMax&&<button onClick={()=>d({type:'AWAKEN_MAX',mId:m.id})}
+                      style={{...FF,padding:'5px 8px',borderRadius:8,border:'none',
+                        background:'linear-gradient(135deg,#ff6b9d,#ffd700)',
+                        color:'#1a0a00',cursor:'pointer',fontSize:10,fontWeight:900}}>
+                      <div>★{sim_aw}まで</div>
+                      <div style={{fontSize:8,marginTop:1}}>💠{sim_totalSoul} 💰{sim_totalGold}</div>
+                    </button>}
+                  </div>;
+                })()
+              }
+            </div>;
+          })}
+        </div>;
+      })()}
     </div>}
 
-    <Btn onClick={execute} color={matIds.length>0?'linear-gradient(135deg,#66bb6a,#2e7d32)':'rgba(255,255,255,0.05)'} disabled={matIds.length===0}>💪 強化する！</Btn>
+    {/* 喰い合成モード（既存ロジック） */}
+    {mode==='feed'&&(()=>{
+      // 予想Lv
+      let pLv=main.level;let pXp=main.xp+totalXp;let lvUps=0;
+      while(pXp>=100*pLv&&lvUps<500){pXp-=100*pLv;pLv++;lvUps++;}
+      const toggleMat=(id)=>{setMatIds(matSet.has(id)?matIds.filter(x=>x!==id):[...matIds,id]);};
+      const selectLowRare=()=>{setMatIds(candidates.filter(m=>m.rarity==='C'||m.rarity==='R').map(m=>m.id));};
+      const selectAll=()=>{setMatIds(candidates.map(m=>m.id));};
+      const clearSel=()=>{setMatIds([]);};
+      const execute=()=>{if(matIds.length===0)return;d({type:'LEVEL_UP_FUSE',mainId:main.id,matIds});setMatIds([]);};
+      const switchMain=(newId)=>{setMainId(newId);setMatIds(matIds.filter(x=>x!==newId));setPickingMain(false);};
 
-    <div style={{...CARD,fontSize:10,opacity:0.6,lineHeight:1.6,marginTop:10,padding:10}}>
-      <div style={{fontWeight:700,marginBottom:4,opacity:0.9}}>💡 強化の仕組み</div>
-      ・素材1体あたりXP: C=20 / R=50 / SR=150 / UR=400 / LR=1000<br/>
-      ・素材のLv +10%/Lv<br/>
-      ・同種素材は +30%ボーナス<br/>
-      ・素材モンスターは消費されます
-    </div>
+      if(pickingMain){
+        return <div style={{...CARD,padding:12}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+            <div style={{fontSize:12,fontWeight:900}}>強化対象を選択</div>
+            <button onClick={()=>setPickingMain(false)} style={{...FF,background:'none',border:'none',color:'#bf88ff',cursor:'pointer',fontSize:11}}>キャンセル</button>
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:5,maxHeight:380,overflowY:'auto'}}>
+            {s.monsters.map(m=>{
+              const mi2=MONS[m.type];const isCurrent=m.id===main.id;const isParty=m.id===s.party.main;
+              return <button key={m.id} onClick={()=>switchMain(m.id)} style={{...FF,padding:5,textAlign:'center',cursor:'pointer',borderRadius:10,border:`2px solid ${isCurrent?'#bf88ff':isParty?'#bf88ff88':RC[m.rarity]+'44'}`,background:isCurrent?'rgba(191,136,255,0.15)':'rgba(255,255,255,0.03)',position:'relative'}}>
+                {isParty&&<div style={{position:'absolute',top:1,right:2,fontSize:7,color:'#bf88ff',fontWeight:900}}>⚔</div>}
+                <EquippedMonster monster={m} size={36} anim="none"/>
+                <div style={{fontSize:8,fontWeight:700,marginTop:2,color:mi2.color,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{m.name}</div>
+                <div style={{fontSize:8,opacity:0.55}}>Lv{m.level}{m.lb>0?' ★'+m.lb:''}</div>
+              </button>;
+            })}
+          </div>
+        </div>;
+      }
+
+      const mi=MONS[main.type];
+      return <div>
+        <div style={{...CARD,padding:'10px 12px',marginBottom:8,background:'rgba(102,187,106,0.05)',border:'1px solid #66bb6a44'}}>
+          <div style={{fontSize:11,fontWeight:900,color:'#66bb6a',marginBottom:3}}>🍖 モンスターを喰わせてレベルUP</div>
+          <div style={{fontSize:10,opacity:0.75,lineHeight:1.5}}>素材モンスターはなくなります。同種喰わせで×1.3ボーナス。</div>
+        </div>
+        {/* メインモンスター */}
+        <div style={{...CARD,padding:12,marginBottom:10,background:`linear-gradient(135deg,${mi.bg}22,rgba(255,255,255,0.04))`,border:`2px solid ${mi.color}44`}}>
+          <div style={{fontSize:10,fontWeight:700,opacity:0.6,marginBottom:6}}>💪 強化対象</div>
+          <div style={{display:'flex',gap:10,alignItems:'center'}}>
+            <EquippedMonster monster={main} size={52} anim="float"/>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontWeight:900,fontSize:13,color:mi.color}}>{main.name}{main.id===s.party.main&&<span style={{fontSize:9,color:'#bf88ff',marginLeft:6}}>⚔ PARTY</span>}</div>
+              <div style={{display:'flex',gap:4,flexWrap:'wrap',margin:'3px 0'}}><Pill label={main.rarity} color={RC[main.rarity]}/>{main.lb>0&&<Pill label={`★${main.lb}`} color='#ff9800'/>}<Pill label={`Lv${main.level}`} color='#42a5f5'/></div>
+              <Bar val={main.xp} max={100*main.level} color='#bf88ff' label={`EXP ${main.xp}/${100*main.level}`}/>
+            </div>
+          </div>
+          <button onClick={()=>setPickingMain(true)} style={{...FF,marginTop:8,width:'100%',padding:'8px 0',borderRadius:9,border:'1px solid #66bb6a66',background:'rgba(102,187,106,0.1)',color:'#66bb6a',cursor:'pointer',fontSize:11,fontWeight:900}}>🔄 強化対象を選ぶ</button>
+        </div>
+        {/* 一括選択ボタン */}
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6,marginBottom:8}}>
+          <button onClick={selectLowRare} style={{...FF,padding:'7px 0',borderRadius:10,border:'1px solid rgba(33,150,243,0.4)',background:'rgba(33,150,243,0.08)',color:'#42a5f5',cursor:'pointer',fontSize:10,fontWeight:700}}>C/R全選択</button>
+          <button onClick={selectAll} style={{...FF,padding:'7px 0',borderRadius:10,border:'1px solid rgba(255,255,255,0.15)',background:'rgba(255,255,255,0.04)',color:'#fff',cursor:'pointer',fontSize:10,fontWeight:700}}>全選択</button>
+          <button onClick={clearSel} disabled={matIds.length===0} style={{...FF,padding:'7px 0',borderRadius:10,border:'1px solid rgba(239,83,80,0.4)',background:matIds.length>0?'rgba(239,83,80,0.08)':'rgba(255,255,255,0.04)',color:matIds.length>0?'#ef5350':'rgba(255,255,255,0.3)',cursor:matIds.length>0?'pointer':'default',fontSize:10,fontWeight:700}}>クリア</button>
+        </div>
+        {/* 素材グリッド */}
+        <div style={{fontSize:10,opacity:0.6,marginBottom:6,display:'flex',justifyContent:'space-between'}}>
+          <span>素材モンスター（{matIds.length}/{candidates.length}選択中）</span>
+          {selectedMats.some(m=>m.id===s.party.main)&&<span style={{color:'#ef5350'}}>⚠ パーティを選んでいます</span>}
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:5,marginBottom:10,maxHeight:280,overflowY:'auto'}}>
+          {candidates.map(m=>{
+            const mi2=MONS[m.type];const sel=matSet.has(m.id);const isParty=m.id===s.party.main;const sameType=m.type===main.type;
+            return <button key={m.id} onClick={()=>toggleMat(m.id)} style={{...FF,padding:4,textAlign:'center',cursor:'pointer',borderRadius:10,border:`2px solid ${sel?'#66bb6a':isParty?'#ef535088':sameType?'#ff9800aa':RC[m.rarity]+'44'}`,background:sel?'rgba(102,187,106,0.15)':'rgba(255,255,255,0.03)',position:'relative'}}>
+              {sel&&<div style={{position:'absolute',top:2,right:3,fontSize:10,color:'#66bb6a',fontWeight:900}}>✓</div>}
+              {isParty&&!sel&&<div style={{position:'absolute',top:1,left:2,fontSize:7,color:'#ef5350',fontWeight:900}}>⚔</div>}
+              {sameType&&!sel&&!isParty&&<div style={{position:'absolute',top:1,left:2,fontSize:6,color:'#ff9800',fontWeight:900}}>+30%</div>}
+              <EquippedMonster monster={m} size={32} anim="none"/>
+              <div style={{fontSize:8,fontWeight:700,color:mi2.color,marginTop:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{m.name}</div>
+              <div style={{display:'flex',justifyContent:'center',alignItems:'center',gap:2,marginTop:1}}>
+                <span style={{fontSize:7,fontWeight:900,color:RC[m.rarity]}}>{m.rarity}</span>
+                <span style={{fontSize:7,opacity:0.5}}>Lv{m.level}</span>
+              </div>
+            </button>;
+          })}
+        </div>
+        {/* XP予想 */}
+        {matIds.length>0&&<div style={{...CARD,padding:12,marginBottom:10,border:'1px solid #66bb6a44',background:'linear-gradient(135deg,rgba(102,187,106,0.08),rgba(255,255,255,0.03))'}}>
+          <div style={{fontSize:10,fontWeight:700,opacity:0.6,marginBottom:6}}>📈 予想結果</div>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
+            <div style={{fontSize:11}}>獲得XP</div>
+            <div style={{fontSize:18,fontWeight:900,color:'#66bb6a'}}>+{totalXp}</div>
+          </div>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <div style={{fontSize:11}}>レベル</div>
+            <div style={{fontSize:13,fontWeight:900}}>{main.level}{lvUps>0?<span style={{color:'#ffd700'}}> → {pLv}（+{lvUps}）</span>:<span style={{opacity:0.5,fontWeight:400}}> （変動なし）</span>}</div>
+          </div>
+        </div>}
+        <Btn onClick={execute} color={matIds.length>0?'linear-gradient(135deg,#66bb6a,#2e7d32)':'rgba(255,255,255,0.05)'} disabled={matIds.length===0}>💪 強化する！</Btn>
+        <div style={{...CARD,fontSize:10,opacity:0.6,lineHeight:1.6,marginTop:10,padding:10}}>
+          <div style={{fontWeight:700,marginBottom:4,opacity:0.9}}>💡 強化の仕組み</div>
+          ・素材1体あたりXP: C=20 / R=50 / SR=150 / UR=400 / LR=1000<br/>
+          ・素材のLv +10%/Lv<br/>
+          ・同種素材は +30%ボーナス<br/>
+          ・素材モンスターは消費されます
+        </div>
+      </div>;
+    })()}
   </div>;
 }
 
