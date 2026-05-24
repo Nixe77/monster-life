@@ -38,6 +38,35 @@ const SPRITE_B64={
 const SPRITE_IMGS={};
 if(typeof window!=='undefined'){Object.entries(SPRITE_B64).forEach(([k,src])=>{const im=new Image();im.src=src;SPRITE_IMGS[k]=im;});}
 import { useState, useEffect, useRef, useReducer } from "react";
+import { initializeApp } from "firebase/app";
+import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "firebase/auth";
+import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
+
+// ═══════════════════════════════════════════════════════════════
+// FIREBASE 設定（要置換）
+// FIREBASE_SETUP.md の手順5でコピーした値に置き換えてください
+// ═══════════════════════════════════════════════════════════════
+const firebaseConfig = {
+  apiKey: "AIzaSyBwcNFI20zsGWh4Z14A95ughW4qaUSMzAQ",
+  authDomain: "monster-life-5e4c9.firebaseapp.com",
+  projectId: "monster-life-5e4c9",
+  storageBucket: "monster-life-5e4c9.firebasestorage.app",
+  messagingSenderId: "1020043468225",
+  appId: "1:1020043468225:web:36da131e747b3574476340",
+  measurementId: "G-7EZQ65BFQC"
+};
+// Firebaseが未設定の場合（プレースホルダーのまま）はクラウド機能をスキップ
+const FIREBASE_ENABLED = firebaseConfig.apiKey !== "YOUR_API_KEY_HERE";
+let fbAuth=null, fbDb=null;
+if(FIREBASE_ENABLED){
+  try{
+    const fbApp=initializeApp(firebaseConfig);
+    fbAuth=getAuth(fbApp);
+    fbDb=getFirestore(fbApp);
+  }catch(e){console.warn('Firebase init failed:',e);}
+}
+// 名前を擬似メールに変換（Firebase Authはメール必須のため）
+function nameToEmail(name){return name.toLowerCase().trim().replace(/[^a-z0-9一-龯ぁ-んァ-ヴー]/g,'_')+'@monsterlife.local';}
 
 const CSS = `
   @import url('https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@700;900&display=swap');
@@ -3924,7 +3953,167 @@ function decodeSave(hex,pw){
 }
 
 const TABS=[['home','🏠','ホーム'],['quest','⚔','クエスト'],['gacha','🎰','ガチャ'],['collection','📖','モンスター'],['bag','🎒','バッグ']];
-export default function App(){
+// ═══════════════════════════════════════════════════════════════
+// AUTH GATE（ログイン/サインアップ画面）
+// ═══════════════════════════════════════════════════════════════
+function AuthGate({onAuthed,onSkip}){
+  const [mode,setMode]=useState('login'); // login | signup
+  const [name,setName]=useState('');
+  const [pw,setPw]=useState('');
+  const [err,setErr]=useState('');
+  const [busy,setBusy]=useState(false);
+
+  async function handleSubmit(){
+    setErr('');
+    if(name.trim().length<2){setErr('名前は2文字以上で入力してください');return;}
+    if(pw.length<6){setErr('パスワードは6文字以上で入力してください');return;}
+    if(!fbAuth){setErr('Firebase未設定です。FIREBASE_SETUP.mdを参照');return;}
+    setBusy(true);
+    try{
+      const email=nameToEmail(name);
+      if(mode==='signup'){
+        const cred=await createUserWithEmailAndPassword(fbAuth,email,pw);
+        onAuthed(cred.user,name.trim(),'signup');
+      }else{
+        const cred=await signInWithEmailAndPassword(fbAuth,email,pw);
+        onAuthed(cred.user,name.trim(),'login');
+      }
+    }catch(e){
+      const code=e?.code||'';
+      if(code==='auth/email-already-in-use')setErr('この名前は既に使われています');
+      else if(code==='auth/invalid-credential'||code==='auth/wrong-password'||code==='auth/user-not-found')setErr('名前またはパスワードが違います');
+      else if(code==='auth/weak-password')setErr('パスワードが弱すぎます（6文字以上）');
+      else if(code==='auth/network-request-failed')setErr('ネットワークエラー：接続を確認してください');
+      else setErr('エラー: '+(e?.message||code||'不明'));
+    }
+    setBusy(false);
+  }
+
+  return <div style={{minHeight:'100vh',background:'linear-gradient(160deg,#1a0533 0%,#2d1054 50%,#1a0533 100%)',fontFamily:"'M PLUS Rounded 1c',sans-serif",color:'#fff',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',maxWidth:430,margin:'0 auto',padding:'24px 18px',gap:14}}>
+    <style>{CSS}</style>
+    <div style={{fontSize:42,marginBottom:4}}>✨</div>
+    <div style={{fontSize:22,fontWeight:900,background:'linear-gradient(90deg,#ff9fcf,#bf88ff)',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent',marginBottom:6}}>モンスターライフ</div>
+    <div style={{fontSize:11,opacity:0.6,marginBottom:8,textAlign:'center'}}>{mode==='signup'?'はじめての方はこちら':'登録済みの方はこちら'}</div>
+
+    {/* モード切替 */}
+    <div style={{display:'flex',gap:4,background:'rgba(255,255,255,0.04)',borderRadius:14,padding:3,width:'100%',maxWidth:300}}>
+      {[['login','📂 ログイン'],['signup','✨ 新規登録']].map(([k,l])=>(
+        <button key={k} onClick={()=>{setMode(k);setErr('');}} style={{...FF,flex:1,padding:'9px 0',borderRadius:11,border:'none',fontWeight:900,fontSize:11,cursor:'pointer',background:mode===k?'linear-gradient(135deg,#bf88ff,#7c3aed)':'transparent',color:mode===k?'#fff':'rgba(255,255,255,0.5)',transition:'all 0.18s'}}>{l}</button>
+      ))}
+    </div>
+
+    {/* 入力フォーム */}
+    <div style={{...CARD,padding:18,width:'100%',maxWidth:320}}>
+      <div style={{fontSize:10,opacity:0.6,marginBottom:4,fontWeight:700}}>👤 名前（2文字以上）</div>
+      <input type="text" autoFocus value={name} onChange={e=>setName(e.target.value)} maxLength={20} placeholder="例: たろう" disabled={busy}
+        style={{...FF,width:'100%',padding:'10px 12px',borderRadius:10,border:'1.5px solid rgba(191,136,255,0.4)',background:'rgba(255,255,255,0.08)',color:'#fff',fontSize:14,outline:'none',marginBottom:10,boxSizing:'border-box'}}/>
+      <div style={{fontSize:10,opacity:0.6,marginBottom:4,fontWeight:700}}>🔒 パスワード（6文字以上）</div>
+      <input type="password" value={pw} onChange={e=>setPw(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')handleSubmit();}} placeholder="パスワード" disabled={busy}
+        style={{...FF,width:'100%',padding:'10px 12px',borderRadius:10,border:'1.5px solid rgba(191,136,255,0.4)',background:'rgba(255,255,255,0.08)',color:'#fff',fontSize:14,outline:'none',marginBottom:12,boxSizing:'border-box'}}/>
+      {err&&<div style={{fontSize:11,color:'#ef5350',marginBottom:10,padding:'6px 10px',background:'rgba(239,83,80,0.08)',borderRadius:8,border:'1px solid #ef535044'}}>⚠ {err}</div>}
+      <button onClick={handleSubmit} disabled={busy} style={{...FF,width:'100%',padding:'12px 0',borderRadius:12,border:'none',background:busy?'rgba(255,255,255,0.1)':'linear-gradient(135deg,#bf40ff,#ff6b9d)',color:'#fff',cursor:busy?'default':'pointer',fontSize:13,fontWeight:900}}>
+        {busy?'⏳ 処理中…':mode==='signup'?'✨ 新規登録してプレイ':'📂 ログインしてプレイ'}
+      </button>
+    </div>
+
+    {/* オフラインプレイ */}
+    <button onClick={onSkip} style={{...FF,background:'none',border:'1px solid rgba(255,255,255,0.15)',color:'rgba(255,255,255,0.6)',cursor:'pointer',fontSize:11,padding:'8px 16px',borderRadius:10,marginTop:4}}>
+      🎮 ログインせずにプレイ（この端末のみ）
+    </button>
+    <div style={{fontSize:9,opacity:0.45,textAlign:'center',marginTop:8,maxWidth:280,lineHeight:1.5}}>
+      💡 ログインすると、別の端末でもデータを引き継げます<br/>
+      {!FIREBASE_ENABLED&&<span style={{color:'#ff9800'}}>⚠ Firebase未設定。FIREBASE_SETUP.mdを参照</span>}
+    </div>
+  </div>;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ROOT APP（認証状態を管理し、ログイン後にゲーム本体を表示）
+// ═══════════════════════════════════════════════════════════════
+export default function RootApp(){
+  const [authPhase,setAuthPhase]=useState('init'); // init | auth | game | offline
+  const [user,setUser]=useState(null);
+  const [userName,setUserName]=useState('');
+  const [cloudInitialData,setCloudInitialData]=useState(undefined); // undefined=未取得 / null=データなし(新規) / Object=取得済み
+
+  // 起動時: 既存セッション復元
+  useEffect(()=>{
+    if(!fbAuth){setAuthPhase('auth');return;}
+    const unsub=onAuthStateChanged(fbAuth,async (u)=>{
+      if(u){
+        // 既存ログイン → Firestoreからデータ取得
+        try{
+          const snap=await getDoc(doc(fbDb,'users',u.uid));
+          if(snap.exists()){
+            const data=snap.data();
+            setCloudInitialData(data.saveData||null);
+            setUserName(data.name||u.email?.split('@')[0]||'プレイヤー');
+          }else{
+            setCloudInitialData(null);
+            setUserName(u.email?.split('@')[0]||'プレイヤー');
+          }
+          setUser(u);
+          setAuthPhase('game');
+        }catch(e){
+          console.error('Cloud load failed:',e);
+          setCloudInitialData(null);
+          setUser(u);
+          setAuthPhase('game');
+        }
+      }else{
+        setAuthPhase('auth');
+      }
+    });
+    return ()=>unsub();
+  },[]);
+
+  // 新規ログイン成功時の処理
+  async function handleAuthed(u,name,mode){
+    setUser(u);
+    setUserName(name);
+    try{
+      const snap=await getDoc(doc(fbDb,'users',u.uid));
+      if(snap.exists()){
+        const data=snap.data();
+        setCloudInitialData(data.saveData||null);
+      }else{
+        // 新規ユーザー: ローカルデータがあれば自動アップロード
+        let localData=null;
+        try{
+          const raw=localStorage.getItem('mlg_save_v7');
+          if(raw)localData=JSON.parse(raw);
+        }catch(e){}
+        await setDoc(doc(fbDb,'users',u.uid),{name,saveData:localData||null,createdAt:Date.now()});
+        setCloudInitialData(localData);
+      }
+    }catch(e){
+      console.error('Cloud sync failed:',e);
+      setCloudInitialData(null);
+    }
+    setAuthPhase('game');
+  }
+
+  function handleSkip(){
+    setAuthPhase('offline');
+  }
+
+  async function handleLogout(){
+    if(fbAuth)await signOut(fbAuth);
+    setUser(null);
+    setUserName('');
+    setCloudInitialData(undefined);
+    setAuthPhase('auth');
+  }
+
+  if(authPhase==='init')return <div style={{minHeight:'100vh',background:'#1a0533',display:'flex',alignItems:'center',justifyContent:'center',color:'#bf88ff',fontFamily:"'M PLUS Rounded 1c',sans-serif"}}><div>⏳ 読み込み中...</div></div>;
+  if(authPhase==='auth')return <AuthGate onAuthed={handleAuthed} onSkip={handleSkip}/>;
+  return <GameApp user={user} userName={userName} cloudInitial={cloudInitialData} onLogout={handleLogout} offline={authPhase==='offline'}/>;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// GAME APP（既存のゲーム本体、クラウドセーブ対応）
+// ═══════════════════════════════════════════════════════════════
+function GameApp({user,userName,cloudInitial,onLogout,offline}){
   const [s,d]=useReducer(reducer,null,INIT);
   const [showSave,setShowSave]=useState(false);
   const [renameTarget,setRenameTarget]=useState(null);
@@ -3933,10 +4122,47 @@ export default function App(){
   const [loadName,setLoadName]=useState('');
   const [loadPw,setLoadPw]=useState('');
   const [loadErr,setLoadErr]=useState('');
-  // Auto-save
+  const [cloudSyncStatus,setCloudSyncStatus]=useState(''); // ''(idle) | 'saving' | 'saved' | 'error'
+  const [cloudInitDone,setCloudInitDone]=useState(false);
+
+  // 起動時: クラウドデータがあればそれをロード（ローカルより優先）
+  useEffect(()=>{
+    if(offline){setCloudInitDone(true);return;}
+    if(cloudInitial===undefined)return; // まだ取得中
+    if(cloudInitial){
+      // クラウドデータあり → reducer にロード
+      d({type:'LOAD_SAVE',data:cloudInitial});
+    }
+    // クラウドデータなしの場合: そのままローカルデータを使用（既存の動作）
+    setCloudInitDone(true);
+  },[cloudInitial,offline]);
+
+  // Auto-save: localStorage（常時）
   useEffect(()=>{
     try{const{toast,...sv}=s;localStorage.setItem(SAVE_KEY,JSON.stringify(sv));}catch(e){}
   },[s]);
+
+  // Cloud auto-save: ログイン中のみ、デバウンス（5秒ごと）
+  const cloudSaveTimer=useRef(null);
+  useEffect(()=>{
+    if(offline||!user||!fbDb||!cloudInitDone)return;
+    if(cloudSaveTimer.current)clearTimeout(cloudSaveTimer.current);
+    cloudSaveTimer.current=setTimeout(async ()=>{
+      try{
+        setCloudSyncStatus('saving');
+        const{toast,gacha,matGacha,...sv}=s; // 一時状態は除外
+        await setDoc(doc(fbDb,'users',user.uid),{name:userName,saveData:sv,updatedAt:Date.now()},{merge:true});
+        setCloudSyncStatus('saved');
+        setTimeout(()=>setCloudSyncStatus(''),1500);
+      }catch(e){
+        console.error('Cloud save failed:',e);
+        setCloudSyncStatus('error');
+        setTimeout(()=>setCloudSyncStatus(''),3000);
+      }
+    },5000);
+    return ()=>clearTimeout(cloudSaveTimer.current);
+  },[s,user,userName,offline,cloudInitDone]);
+
   // Background shop tick (works on any screen)
   useEffect(()=>{const id=setInterval(()=>d({type:'BG_SHOP_TICK'}),1800);return()=>clearInterval(id)},[]);
   useEffect(()=>{if(!s.toast)return;const id=setTimeout(()=>d({type:'TOAST_CLEAR'}),2200);return()=>clearTimeout(id)},[s.toast]);
@@ -3947,10 +4173,23 @@ export default function App(){
     {s.toast&&<Toast msg={s.toast} onDone={()=>d({type:'TOAST_CLEAR'})}/>}
     {/* Save panel */}
     {showSave&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.7)',zIndex:900,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setShowSave(false)}>
-      <div style={{...CARD,width:280,animation:'pop 0.25s ease-out',...FF}} onClick={e=>e.stopPropagation()}>
-        <div style={{fontWeight:900,fontSize:16,marginBottom:14,textAlign:'center'}}>💾 セーブ</div>
-        <div style={{fontSize:11,opacity:0.6,marginBottom:4,textAlign:'center'}}>自動セーブ中（ページ変更のたびに保存）</div>
+      <div style={{...CARD,width:300,animation:'pop 0.25s ease-out',...FF}} onClick={e=>e.stopPropagation()}>
+        <div style={{fontWeight:900,fontSize:16,marginBottom:14,textAlign:'center'}}>💾 セーブ & アカウント</div>
+        {user&&!offline?<>
+          <div style={{background:'linear-gradient(135deg,rgba(191,64,255,0.12),rgba(102,187,106,0.08))',border:'1px solid #bf40ff66',borderRadius:12,padding:'10px 12px',fontSize:11,marginBottom:10}}>
+            <div style={{fontSize:9,opacity:0.6,marginBottom:2}}>ログイン中</div>
+            <div style={{fontSize:13,fontWeight:900,color:'#bf88ff'}}>👤 {userName}</div>
+            <div style={{fontSize:9,opacity:0.6,marginTop:4}}>☁ クラウド同期 有効（5秒ごとに自動保存）</div>
+          </div>
+        </>:offline?<>
+          <div style={{background:'rgba(255,152,0,0.08)',border:'1px solid #ff980066',borderRadius:12,padding:'10px 12px',fontSize:11,marginBottom:10}}>
+            <div style={{fontSize:13,fontWeight:900,color:'#ff9800',marginBottom:3}}>🎮 オフラインモード</div>
+            <div style={{fontSize:9,opacity:0.8,lineHeight:1.5}}>この端末でのみデータを保存中。<br/>ログインすると別端末でも引き継げます。</div>
+          </div>
+        </>:null}
         <div style={{background:'rgba(102,187,106,0.15)',border:'1px solid #66bb6a',borderRadius:12,padding:'8px 12px',fontSize:11,marginBottom:14,textAlign:'center'}}>✅ {s.monsters.length}体 / 💰{s.coins}G / PL{s.playerLv} / {Object.values(s.materials).reduce((a,b)=>a+b,0)}素材</div>
+        {user&&!offline&&<button onClick={onLogout} style={{...FF,width:'100%',padding:'10px 0',borderRadius:12,border:'1px solid rgba(255,255,255,0.2)',background:'rgba(255,255,255,0.06)',color:'#fff',cursor:'pointer',fontWeight:700,fontSize:12,marginBottom:8}}>🚪 ログアウト</button>}
+        {offline&&<button onClick={onLogout} style={{...FF,width:'100%',padding:'10px 0',borderRadius:12,border:'1px solid #bf88ff',background:'linear-gradient(135deg,#bf40ff,#ff6b9d)',color:'#fff',cursor:'pointer',fontWeight:900,fontSize:12,marginBottom:8}}>📂 ログインする</button>}
         <button onClick={hardReset} style={{...FF,width:'100%',padding:'10px 0',borderRadius:12,border:'1px solid #ef5350',background:'rgba(239,83,80,0.1)',color:'#ef5350',cursor:'pointer',fontWeight:700,fontSize:12}}>🗑 データを初期化する</button>
         <button onClick={()=>setShowSave(false)} style={{...FF,width:'100%',padding:'10px 0',borderRadius:12,border:'none',background:'rgba(255,255,255,0.08)',color:'rgba(255,255,255,0.6)',cursor:'pointer',fontWeight:700,fontSize:12,marginTop:8}}>閉じる</button>
       </div>
@@ -3999,8 +4238,17 @@ export default function App(){
       </div>
     </div>}
     <div style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 16px 8px',background:'linear-gradient(180deg,rgba(20,5,45,0.88) 0%,transparent 100%)'}}>
-      <div style={{display:'flex',gap:4,}}><button onClick={()=>setShowSave(true)} style={{background:'none',border:'none',cursor:'pointer',fontSize:13,opacity:0.7,...FF}}>💾</button><button onClick={()=>setShowLoad(true)} style={{background:'none',border:'none',cursor:'pointer',fontSize:13,opacity:0.7,...FF}}>📂</button></div>
-      <div style={{fontWeight:900,fontSize:13,background:'linear-gradient(90deg,#ff9fcf,#bf88ff)',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent'}}>✨ モンスターライフ</div>
+      <div style={{display:'flex',gap:4,}}><button onClick={()=>setShowSave(true)} style={{background:'none',border:'none',cursor:'pointer',fontSize:13,opacity:0.7,...FF}}>💾</button></div>
+      <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:2}}>
+        <div style={{fontWeight:900,fontSize:13,background:'linear-gradient(90deg,#ff9fcf,#bf88ff)',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent'}}>✨ モンスターライフ</div>
+        {user&&!offline&&<div style={{display:'flex',alignItems:'center',gap:4,fontSize:8,opacity:0.7}}>
+          <span style={{color:'#bf88ff'}}>👤 {userName}</span>
+          {cloudSyncStatus==='saving'&&<span style={{color:'#42a5f5'}}>☁ 同期中…</span>}
+          {cloudSyncStatus==='saved'&&<span style={{color:'#66bb6a'}}>☁ 同期済</span>}
+          {cloudSyncStatus==='error'&&<span style={{color:'#ef5350'}}>⚠ 同期失敗</span>}
+        </div>}
+        {offline&&<div style={{fontSize:8,opacity:0.5,color:'#ff9800'}}>🎮 オフラインモード</div>}
+      </div>
       <div style={{display:'flex',alignItems:'center',gap:8}}>
         <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:3}}>
           <div style={{display:'flex',alignItems:'center',gap:5}}>
