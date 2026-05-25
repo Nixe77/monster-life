@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v1.6.0"; // 昇格演出180°回転+UR/LR差別化+LR虹色オーラ
+const APP_VERSION = "v1.7.0"; // 回転修正+リザルト詳細+装備プレビュー+一括合成
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -1226,6 +1226,51 @@ function reducer(s,a){
       });
       const rarUp=newRar!==curRar?` ${curRar}→${newRar}！`:'';
       return{...s,equipInventory:newInv,monsters:newMonsters,toast:`${defEq.name} +${newLb} Lv${newLv}${rarUp}`};
+    }
+    case 'FUSE_EQUIP_BATCH':{
+      // 一括合成: a.baseId に対して a.matIds（複数）を順番に合成
+      // 各素材は baseEq と同じkey, 同じlb である必要がある。途中で条件を満たさなくなったらそこで停止
+      const inv0=s.equipInventory;
+      const baseEq0=findEq(inv0,a.baseId);
+      if(!baseEq0)return{...s,toast:'対象の装備が見つからない'};
+      const defEq=EQUIP[baseEq0.key];
+      const RO_LOC=['C','R','SR','UR','LR'];
+      let curBase={...baseEq0};
+      let curInv=[...inv0];
+      let removedIds=[];
+      let fuseCount=0;
+      let finalRar=getEqRarity(curBase);
+      let rarChanges=[];
+      for(const matId of a.matIds){
+        const matEq=findEq(curInv,matId);
+        if(!matEq||matEq.id===curBase.id)continue;
+        if(matEq.key!==curBase.key)continue;
+        if((matEq.lb||0)!==(curBase.lb||0))break; // 同じlbでなくなったら停止
+        const newLb=(curBase.lb||0)+1;
+        const newLv=Math.max(curBase.lv||1,matEq.lv||1)+1;
+        const curRar=getEqRarity(curBase);
+        let newRar=curRar;
+        if(newLb===3||newLb===5){
+          const idx=RO_LOC.indexOf(curRar);
+          if(idx>=0&&idx<RO_LOC.length-1)newRar=RO_LOC[idx+1];
+        }
+        if(newRar!==curRar)rarChanges.push(`${curRar}→${newRar}`);
+        curBase={id:curBase.id,key:curBase.key,lv:newLv,lb:newLb,rarityOverride:newRar!==defEq.rarity?newRar:null};
+        removedIds.push(matId);
+        finalRar=newRar;
+        fuseCount++;
+        // 限界突破上限 (lb=5) に到達したら以降は合成不可
+        if(newLb>=5)break;
+      }
+      if(fuseCount===0)return{...s,toast:'合成できる装備がない'};
+      const newInv=curInv.filter(e=>!removedIds.includes(e.id)).map(e=>e.id===curBase.id?curBase:e);
+      const newMonsters=s.monsters.map(m=>{
+        const ne={...m.equip};let changed=false;
+        ['hat','acc','wpn'].forEach(sl=>{if(removedIds.includes(ne[sl])){ne[sl]=null;changed=true;}});
+        return changed?{...m,equip:ne}:m;
+      });
+      const rarMsg=rarChanges.length>0?` (${rarChanges.join(',')})`:'';
+      return{...s,equipInventory:newInv,monsters:newMonsters,toast:`✨ ${defEq.name} +${curBase.lb} Lv${curBase.lv} (${fuseCount}個合成)${rarMsg}`};
     }
     case 'AWAKEN':{
       // 覚醒: lb=5かつ覚醒<5の時に たましいのかけら×N消費 + ゴールド消費で覚醒+1
@@ -3076,6 +3121,7 @@ function SettingsModal({s,d,onClose}){
 function BagScreen({s,d,onUseNameplate}){
   const [tab,setTab]=useState('mat');
   const [equipSel,setEquipSel]=useState(null);
+  const [equipPreview,setEquipPreview]=useState(null); // 装備差分プレビュー対象のID
   const [showSettings,setShowSettings]=useState(false);
   const pm=s.monsters.find(m=>m.id===s.party.main)||s.monsters[0];
   const SLOTS=[['hat','頭🎩'],['acc','首💎'],['wpn','手⚔']];
@@ -3132,7 +3178,7 @@ function BagScreen({s,d,onUseNameplate}){
               const eq=eqId?findEq(s.equipInventory,eqId):null;
               const def=eq&&EQUIP[eq.key];
               const rar=eq?getEqRarity(eq):null;
-              return <button key={slot} onClick={()=>setEquipSel(slot===equipSel?null:slot)} style={{...CARD,...FF,padding:'6px 4px',textAlign:'center',cursor:'pointer',border:`2px solid ${equipSel===slot?'#bf88ff':rar?RC[rar]+'aa':'rgba(255,255,255,0.1)'}`}}>
+              return <button key={slot} onClick={()=>{setEquipSel(slot===equipSel?null:slot);setEquipPreview(null);}} style={{...CARD,...FF,padding:'6px 4px',textAlign:'center',cursor:'pointer',border:`2px solid ${equipSel===slot?'#bf88ff':rar?RC[rar]+'aa':'rgba(255,255,255,0.1)'}`}}>
                 <div style={{height:24,display:'flex',alignItems:'center',justifyContent:'center'}}>{def?<EquipIcon k={eq.key} size={22}/>:<span style={{fontSize:20}}>➕</span>}</div>
                 <div style={{fontSize:8,marginTop:2,opacity:0.7,color:rar?RC[rar]:undefined}}>{def?`${def.name}`:lbl}</div>
                 {eq&&<div style={{fontSize:8,marginTop:1,color:'#ffd700',fontWeight:900}}>Lv{eq.lv}{eq.lb>0&&` +${eq.lb}`}</div>}
@@ -3142,22 +3188,81 @@ function BagScreen({s,d,onUseNameplate}){
         </div>
       </div>
       {equipSel&&<div style={{...CARD,animation:'pop 0.25s ease-out'}}>
-        <div style={{fontSize:11,opacity:0.6,marginBottom:8}}>▼ {equipSel==='hat'?'頭':equipSel==='acc'?'首':'手'}装備を選ぶ（高Lv順）</div>
-        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-          <button onClick={()=>{d({type:'EQUIP',mId:pm.id,slot:equipSel,eqId:null});setEquipSel(null)}} style={{...FF,padding:'5px 10px',borderRadius:12,border:'1px solid rgba(255,255,255,0.2)',background:'rgba(255,255,255,0.06)',cursor:'pointer',fontSize:11,color:'rgba(255,255,255,0.6)'}}>外す</button>
-          {s.equipInventory.filter(eq=>EQUIP[eq.key]?.slot===equipSel)
-            .sort((a,b)=>(b.lb*100+b.lv)-(a.lb*100+a.lv))
-            .map(eq=>{
-              const def=EQUIP[eq.key];const rar=getEqRarity(eq);
-              const isEquipped=Object.values(pm.equip||{}).includes(eq.id);
-              return <button key={eq.id} onClick={()=>{d({type:'EQUIP',mId:pm.id,slot:equipSel,eqId:eq.id});setEquipSel(null)}}
-                style={{...FF,padding:'6px 10px',borderRadius:12,border:`1px solid ${RC[rar]}88`,background:isEquipped?`${RC[rar]}55`:`${RC[rar]}22`,cursor:'pointer',fontSize:12,display:'flex',alignItems:'center',gap:4,opacity:isEquipped?0.6:1}}>
-                <EquipIcon k={eq.key} size={16}/>
-                <span style={{fontSize:10}}>{def.name}<span style={{color:'#ffd700',marginLeft:3}}>Lv{eq.lv}{eq.lb>0&&`+${eq.lb}`}</span></span>
-              </button>;
-            })}
-          {s.equipInventory.filter(eq=>EQUIP[eq.key]?.slot===equipSel).length===0&&<div style={{fontSize:11,opacity:0.4}}>なし（クエスト中に敵を倒して入手）</div>}
-        </div>
+        <div style={{fontSize:11,opacity:0.6,marginBottom:8}}>▼ {equipSel==='hat'?'頭':equipSel==='acc'?'首':'手'}装備を選ぶ（高Lv順／タップで差分プレビュー）</div>
+        {(()=>{
+          // 現在のステータス（基準）
+          const curStats=calcStats(pm,s.equipInventory,s.facilities);
+          // 装備差分プレビュー: 各装備に対して「装備した場合のステータス」を計算
+          function previewWith(eqIdOrNull){
+            const newPm={...pm,equip:{...pm.equip,[equipSel]:eqIdOrNull}};
+            return calcStats(newPm,s.equipInventory,s.facilities);
+          }
+          function fmtDelta(cur,nxt){
+            const d=nxt-cur;
+            if(d===0)return <span style={{opacity:0.4}}>±0</span>;
+            const c=d>0?'#66bb6a':'#ef5350';
+            return <span style={{color:c,fontWeight:900}}>{d>0?'+':''}{d}</span>;
+          }
+          return <>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:8}}>
+              <button onClick={()=>{d({type:'EQUIP',mId:pm.id,slot:equipSel,eqId:null});setEquipSel(null)}} style={{...FF,padding:'5px 10px',borderRadius:12,border:'1px solid rgba(255,255,255,0.2)',background:'rgba(255,255,255,0.06)',cursor:'pointer',fontSize:11,color:'rgba(255,255,255,0.6)'}}>外す</button>
+              {s.equipInventory.filter(eq=>EQUIP[eq.key]?.slot===equipSel)
+                .sort((a,b)=>(b.lb*100+b.lv)-(a.lb*100+a.lv))
+                .map(eq=>{
+                  const def=EQUIP[eq.key];const rar=getEqRarity(eq);
+                  const isEquipped=Object.values(pm.equip||{}).includes(eq.id);
+                  const isCurrent=pm.equip?.[equipSel]===eq.id;
+                  return <button key={eq.id} onClick={()=>{
+                    // プレビュー切替: すでに選択中のものなら確定、それ以外はプレビュー
+                    if(equipPreview===eq.id){d({type:'EQUIP',mId:pm.id,slot:equipSel,eqId:eq.id});setEquipSel(null);setEquipPreview(null);}
+                    else setEquipPreview(eq.id);
+                  }}
+                    style={{...FF,padding:'6px 10px',borderRadius:12,border:`${equipPreview===eq.id?'2px':'1px'} solid ${equipPreview===eq.id?'#bf88ff':RC[rar]+'88'}`,background:isCurrent?`${RC[rar]}55`:isEquipped?`${RC[rar]}33`:`${RC[rar]}22`,cursor:'pointer',fontSize:12,display:'flex',alignItems:'center',gap:4,opacity:isCurrent?0.6:1,position:'relative'}}>
+                    <EquipIcon k={eq.key} size={16}/>
+                    <span style={{fontSize:10}}>{def.name}<span style={{color:'#ffd700',marginLeft:3}}>Lv{eq.lv}{eq.lb>0&&`+${eq.lb}`}</span></span>
+                    {isCurrent&&<span style={{fontSize:8,marginLeft:3,opacity:0.7}}>装備中</span>}
+                  </button>;
+                })}
+              {s.equipInventory.filter(eq=>EQUIP[eq.key]?.slot===equipSel).length===0&&<div style={{fontSize:11,opacity:0.4}}>なし（クエスト中に敵を倒して入手）</div>}
+            </div>
+            {/* プレビュー差分表示 */}
+            {equipPreview&&(()=>{
+              const previewEq=s.equipInventory.find(e=>e.id===equipPreview);
+              if(!previewEq)return null;
+              const def=EQUIP[previewEq.key];
+              const nxt=previewWith(equipPreview);
+              return <div style={{background:'rgba(191,136,255,0.08)',border:'1px solid rgba(191,136,255,0.35)',borderRadius:10,padding:10,marginTop:4}}>
+                <div style={{fontSize:11,fontWeight:900,color:'#bf88ff',marginBottom:6,display:'flex',alignItems:'center',gap:6}}>
+                  <EquipIcon k={previewEq.key} size={18}/>
+                  <span>{def.name} に変更すると…</span>
+                </div>
+                <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:6,fontSize:10}}>
+                  <div style={{background:'rgba(255,80,80,0.08)',padding:'4px 6px',borderRadius:6,textAlign:'center'}}>
+                    <div style={{opacity:0.6,fontSize:8}}>HP</div>
+                    <div style={{fontWeight:900}}>{nxt.hp}</div>
+                    <div style={{fontSize:9}}>{fmtDelta(curStats.hp,nxt.hp)}</div>
+                  </div>
+                  <div style={{background:'rgba(255,180,80,0.08)',padding:'4px 6px',borderRadius:6,textAlign:'center'}}>
+                    <div style={{opacity:0.6,fontSize:8}}>攻撃</div>
+                    <div style={{fontWeight:900}}>{nxt.atk}</div>
+                    <div style={{fontSize:9}}>{fmtDelta(curStats.atk,nxt.atk)}</div>
+                  </div>
+                  <div style={{background:'rgba(80,180,255,0.08)',padding:'4px 6px',borderRadius:6,textAlign:'center'}}>
+                    <div style={{opacity:0.6,fontSize:8}}>防御</div>
+                    <div style={{fontWeight:900}}>{nxt.def}</div>
+                    <div style={{fontSize:9}}>{fmtDelta(curStats.def,nxt.def)}</div>
+                  </div>
+                  <div style={{background:'rgba(180,255,150,0.08)',padding:'4px 6px',borderRadius:6,textAlign:'center'}}>
+                    <div style={{opacity:0.6,fontSize:8}}>速度</div>
+                    <div style={{fontWeight:900}}>{nxt.spd}</div>
+                    <div style={{fontSize:9}}>{fmtDelta(curStats.spd,nxt.spd)}</div>
+                  </div>
+                </div>
+                <Btn onClick={()=>{d({type:'EQUIP',mId:pm.id,slot:equipSel,eqId:equipPreview});setEquipSel(null);setEquipPreview(null)}} color='linear-gradient(135deg,#bf88ff,#7c3aed)' style={{padding:'7px 0',fontSize:12,marginTop:8}}>✓ この装備に変更</Btn>
+              </div>;
+            })()}
+          </>;
+        })()}
       </div>}
     </div>}
     {tab==='fuse'&&<div>
@@ -3203,7 +3308,17 @@ function BagScreen({s,d,onUseNameplate}){
                 <div style={{flex:1,background:'rgba(255,255,255,0.05)',borderRadius:8,padding:'4px 8px'}}>核：Lv{base.lv}{base.lb>0&&` +${base.lb}`}</div>
                 <div style={{flex:1,background:'rgba(255,80,80,0.1)',borderRadius:8,padding:'4px 8px'}}>素材：Lv{mat.lv}{mat.lb>0&&` +${mat.lb}`}（消費）</div>
               </div>
-              <Btn onClick={()=>d({type:'FUSE_EQUIP',baseId:base.id,matId:mat.id})} color={willRarUp?'linear-gradient(135deg,#e040fb,#7c3aed)':'linear-gradient(135deg,#ffd700,#ff9800)'} text={willRarUp?'#fff':'#1a0a00'} style={{padding:'7px 0',fontSize:12}}>⚗ 合成する</Btn>
+              {(()=>{
+                // 一括合成可能な素材を抽出（baseと同じkey&同じlb、最大 5-base.lb 個）
+                const sameLbMats=sorted.slice(1).filter(e=>(e.lb||0)===(base.lb||0));
+                const remainingSlots=Math.max(0,5-(base.lb||0));
+                const batchMats=sameLbMats.slice(0,remainingSlots);
+                const canBatch=batchMats.length>=2;
+                return <div style={{display:'grid',gridTemplateColumns:canBatch?'1fr 1fr':'1fr',gap:6}}>
+                  <Btn onClick={()=>d({type:'FUSE_EQUIP',baseId:base.id,matId:mat.id})} color={willRarUp?'linear-gradient(135deg,#e040fb,#7c3aed)':'linear-gradient(135deg,#ffd700,#ff9800)'} text={willRarUp?'#fff':'#1a0a00'} style={{padding:'7px 0',fontSize:12}}>⚗ 合成する</Btn>
+                  {canBatch&&<Btn onClick={()=>d({type:'FUSE_EQUIP_BATCH',baseId:base.id,matIds:batchMats.map(e=>e.id)})} color='linear-gradient(135deg,#3f8efc,#0a3d91)' text='#fff' style={{padding:'7px 0',fontSize:12}}>⚗⚗ 一括 ×{batchMats.length}</Btn>}
+                </div>;
+              })()}
             </div>;
           })}
         </div>;
@@ -3410,7 +3525,7 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
 
       {/* 拡大カード（多段階フリップ・2面構造） */}
       <div style={{width:260,maxWidth:'82vw',aspectRatio:'2/3',perspective:'1000px',position:'relative',animation:'zoomInCard 0.55s cubic-bezier(0.34,1.56,0.64,1)',zIndex:2}}>
-        <div key={`card${flashKey}`} style={{position:'absolute',inset:0,transformStyle:'preserve-3d',transition:'transform 0.7s cubic-bezier(0.34,1.56,0.64,1)',transform:`rotateY(${zoomRotation}deg)`,animation:flashKey>0&&!zoomFlipped?'cardShake 0.4s ease-in-out':'none'}}>
+        <div style={{position:'absolute',inset:0,transformStyle:'preserve-3d',transition:'transform 0.7s cubic-bezier(0.34,1.56,0.64,1)',transform:`rotateY(${zoomRotation}deg)`}}>
           {/* 表側面 (faceA) - 偶数段階で表示、最終段階のrotation%360===0なら表面 */}
           <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',transform:'translateZ(1px)',borderRadius:14,overflow:'hidden'}}>
             {zoomFlipped&&(zoomRotation%360===0)?(
@@ -3469,7 +3584,23 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
       return <div style={{width:'100%',padding:14,textAlign:'center',animation:'fadeIn 0.4s ease-out'}}>
         <div style={{fontSize:22,fontWeight:900,background:'linear-gradient(90deg,#bf88ff,#ff6b9d)',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent',marginBottom:6}}>✨ 結果 ✨</div>
         <div style={{fontSize:11,opacity:0.65,marginBottom:14}}>{results.length}連の戦果</div>
-        <div style={{...CARD,padding:'16px 14px',marginBottom:10}}>
+        {/* 引いたモンスター一覧 */}
+        <div style={{...CARD,padding:'12px 10px',marginBottom:10}}>
+          <div style={{fontSize:10,opacity:0.6,marginBottom:8,fontWeight:700}}>📋 排出モンスター</div>
+          <div style={{display:'grid',gridTemplateColumns:results.length>=5?'repeat(5,1fr)':`repeat(${results.length},1fr)`,gap:6}}>
+            {results.map((r,i)=>{
+              const mc=RC[r.rarity]||'#fff';
+              const mi=MONS[r.type];
+              return <div key={i} style={{background:`linear-gradient(135deg,${mi?.bg||mc}33,${mc}11)`,border:`1.5px solid ${mc}`,borderRadius:6,padding:'4px 2px',display:'flex',flexDirection:'column',alignItems:'center',gap:2,position:'relative'}}>
+                {r.isNew&&<div style={{position:'absolute',top:-3,right:-3,background:'#ff6b9d',color:'#fff',fontSize:6,fontWeight:900,padding:'1px 3px',borderRadius:3,letterSpacing:0.5}}>NEW</div>}
+                <MonsterSprite type={r.type} size={28} anim="none"/>
+                <div style={{fontSize:7,fontWeight:900,color:mc}}>{r.rarity}</div>
+                <div style={{fontSize:7,opacity:0.75,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:'100%'}}>{mi?.name}</div>
+              </div>;
+            })}
+          </div>
+        </div>
+        <div style={{...CARD,padding:'14px 14px',marginBottom:10}}>
           <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:6,marginBottom:10}}>
             {RO.map(rar=>(
               <div key={rar} style={{background:`${RC[rar]}18`,border:`1px solid ${RC[rar]}66`,borderRadius:8,padding:'7px 0',fontSize:10,fontWeight:900,color:RC[rar]}}>
