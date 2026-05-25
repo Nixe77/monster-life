@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v1.5.0"; // 更新時に変更（フェーズ1 + Firebase + ガチャ演出多段階フリップ）
+const APP_VERSION = "v1.5.1"; // 昇格演出UR/LR限定・確率30%・純粋レア表示
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -1370,17 +1370,20 @@ function reducer(s,a){
       // 重複時は自動で限界突破（★5未満の同種があればLB、無ければ新規追加）
       for(const type of pulled){
         const isNewType=!ownedTypesBefore.has(type);
+        // ガチャ演出用のレアリティは「プール抽選時の純粋なレア」で固定（ランクアップ後の値を使わない）
+        const pureRarity=MONS[type].rarity;
         const dup=mons.find(m=>m.type===type&&m.lb<5);
         if(dup){
           const nlb=Math.min(5,dup.lb+1);
           const nr=(nlb===3||nlb===5)&&RO.indexOf(dup.rarity)<4?RO[RO.indexOf(dup.rarity)+1]:dup.rarity;
           mons=mons.map(m=>m.id===dup.id?{...m,lb:nlb,rarity:nr}:m);
-          results.push({type,isLB:true,rarity:nr,lb:nlb,isNew:false});
+          // results.rarity = pureRarity (ガチャ画面表示用)、isLB情報は保持するが演出では使わない
+          results.push({type,isLB:true,rarity:pureRarity,lb:nlb,isNew:false});
         }else{
           const nm={...mkMon(type,Date.now()+Math.random()*9999)};
           mons.push(nm);
           ownedTypesBefore.add(type); // 同じ抽選内で2体目以降は既所持扱い
-          results.push({type,isLB:false,rarity:MONS[type].rarity,lb:0,isNew:isNewType});
+          results.push({type,isLB:false,rarity:pureRarity,lb:0,isNew:isNewType});
         }
       }
       return{...s,coins:s.coins-cost,monsters:mons,gacha:{results,idx:0}};
@@ -3237,16 +3240,14 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
   const promoteSeqRef=useRef(null);
 
   if(promoteSeqRef.current===null){
-    // 初期化: SR以上のカードの60%を昇格対象に選定
-    // 裏面色は3段階（低=銀青/中=紫/高=金）なので、パスもレア度に応じて段階数を変える
+    // 初期化: UR/LRカードの30%を昇格対象に選定
+    // 裏面色は3段階（低=銀青/中=紫/高=金）なので、UR/LRは3段階で昇格演出
     const seq=results.map(r=>{
       if(kind!=='monster')return null; // 素材ガチャは昇格演出なし
       const idx=RO.indexOf(r.rarity);
-      if(idx<2)return null; // C/Rは演出なし
-      if(Math.random()>=0.60)return null; // 40%は通常表示
-      // SR: 銀青→紫 (2段階)
+      if(idx<3)return null; // C/R/SRは演出なし（UR以上のみ昇格演出対象）
+      if(Math.random()>=0.30)return null; // 70%は通常表示
       // UR/LR: 銀青→紫→金 (3段階)
-      if(r.rarity==='SR')return ['C','SR'];
       return ['C','SR',r.rarity];
     });
     promoteSeqRef.current=seq;
@@ -3498,7 +3499,6 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
               {kind==='monster'?<>
                 <MonsterSprite type={r.type} size={40} anim="none"/>
                 <div style={{fontSize:8,fontWeight:900,color:col,marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:'100%'}}>{MONS[r.type]?.name}</div>
-                {r.isLB&&<div style={{fontSize:7,color:'#ff9800',fontWeight:900,marginTop:1}}>★{r.lb}</div>}
               </>:<>
                 <div style={{fontSize:30}}>{r.item==='skill_stone'?'📜':'💠'}</div>
                 <div style={{fontSize:8,fontWeight:900,color:col,marginTop:2}}>×{r.qty}</div>
