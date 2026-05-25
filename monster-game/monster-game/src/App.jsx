@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v1.9.4"; // 単発演出強化+レア別段階+単発スキップ非表示+タップUI洗練
+const APP_VERSION = "v1.9.5"; // 設定ボタン強調+設定に自動出品追加+autoList永続化バグ修正
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -1004,7 +1004,7 @@ function migrateSave(p){
     })(),
     materials,
     equipInventory:equipInventory.length>0?equipInventory:_initialEquip(),
-    shop:{listings,pendingGold:p.shop?.pendingGold||0},
+    shop:{listings,pendingGold:p.shop?.pendingGold||0,autoList:!!p.shop?.autoList},
     facilities:p.facilities||{},
     playerLv:p.playerLv||1,
     playerXp:p.playerXp||0,
@@ -3113,6 +3113,18 @@ function SettingsModal({s,d,onClose}){
         </button>
       </div>
 
+      {/* 自動出品 (雑貨商Lv2以上で解放) */}
+      {(()=>{const bzLv=s.facilities?.bazaar?.lv||0;const unlocked=bzLv>=2;const autoOn=!!s.shop?.autoList;
+      return <div style={{...CARD,padding:'10px 12px',marginBottom:8,display:'flex',justifyContent:'space-between',alignItems:'center',opacity:unlocked?1:0.5}}>
+        <div>
+          <div style={{fontSize:11,fontWeight:900}}>🏪 自動出品</div>
+          <div style={{fontSize:9,opacity:0.6,marginTop:2}}>{unlocked?'戦闘ごとに新規入手素材を雑貨商へ自動出品':'雑貨商Lv2で解放'}</div>
+        </div>
+        <button onClick={()=>{if(unlocked)d({type:'TOGGLE_AUTO_LIST'});}} disabled={!unlocked} style={{...FF,padding:'6px 14px',borderRadius:20,border:'none',background:autoOn&&unlocked?'linear-gradient(135deg,#bf40ff,#7c4dff)':'rgba(255,255,255,0.1)',color:autoOn&&unlocked?'#fff':'rgba(255,255,255,0.5)',cursor:unlocked?'pointer':'not-allowed',fontSize:11,fontWeight:900}}>
+          {autoOn?'ON':'OFF'}
+        </button>
+      </div>;})()}
+
       <button onClick={onClose} style={{...FF,width:'100%',padding:'10px 0',borderRadius:10,border:'none',background:'rgba(255,255,255,0.08)',color:'rgba(255,255,255,0.7)',cursor:'pointer',fontSize:12,fontWeight:700,marginTop:8}}>閉じる</button>
     </div>
   </div>;
@@ -5162,9 +5174,9 @@ function GameApp({user,userName,cloudInitial,onLogout,offline}){
       </div>
     </div>}
     <div style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 16px 8px',background:'linear-gradient(180deg,rgba(20,5,45,0.88) 0%,transparent 100%)'}}>
-      <div style={{display:'flex',gap:4,alignItems:'center'}}>
-        <button onClick={()=>setShowSave(true)} title="セーブ" style={{background:'none',border:'none',cursor:'pointer',fontSize:13,opacity:0.7,...FF}}>💾</button>
-        <button onClick={()=>setShowSettings(true)} title="設定" style={{background:'none',border:'none',cursor:'pointer',fontSize:13,opacity:0.7,...FF}}>⚙</button>
+      <div style={{display:'flex',gap:6,alignItems:'center'}}>
+        <button onClick={()=>setShowSave(true)} title="セーブ" style={{background:'rgba(255,255,255,0.06)',border:'1px solid rgba(255,255,255,0.12)',borderRadius:8,cursor:'pointer',fontSize:15,padding:'4px 8px',color:'rgba(255,255,255,0.85)',...FF}}>💾</button>
+        <button onClick={()=>setShowSettings(true)} title="設定" style={{background:'rgba(191,136,255,0.10)',border:'1px solid rgba(191,136,255,0.35)',borderRadius:8,cursor:'pointer',fontSize:15,padding:'4px 8px',color:'#bf88ff',...FF}}>⚙</button>
       </div>
       <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:2}}>
         <div style={{display:'flex',alignItems:'center',gap:6}}>
