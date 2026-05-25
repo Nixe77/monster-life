@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v1.8.9"; // position重複バグ修正(裏面A/Bが半分のサイズになる現象)
+const APP_VERSION = "v1.9.0"; // 昇格演出から金色裏面段階を削除(ちかちか解消)
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -3365,15 +3365,15 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
 
   if(promoteSeqRef.current===null){
     // 初期化: UR/LRカードの30%を昇格対象に選定
-    // UR/LR ともに 3段階 (C → SR → 金) - 裏面色が3種類しかないので統一
-    // LR の特別性は虹色オーラ・専用バナー・最終バナーで担保
+    // 銀青 → 紫 → 表面 の2段階の裏面表示 + フリップ
+    // 金色裏面は表示せず、紫からそのまま表面（金色裏面の「ちかちか」を回避）
     const seq=results.map(r=>{
       if(kind!=='monster')return null; // 素材ガチャは昇格演出なし
       const idx=RO.indexOf(r.rarity);
       if(idx<3)return null; // C/R/SRは演出なし（UR以上のみ昇格演出対象）
       if(Math.random()>=0.30)return null; // 70%は通常表示
-      // UR/LR共通: 銀青 → 紫 → 金 の3段階（金の連続を防ぐ）
-      return ['C','SR',r.rarity];
+      // UR/LR共通: 銀青 → 紫 → (フリップ) → 表面 の2段階裏面
+      return ['C','SR'];
     });
     promoteSeqRef.current=seq;
   }
