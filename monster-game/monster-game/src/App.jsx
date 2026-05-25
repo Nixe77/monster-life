@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v1.8.3"; // 裏面レイアウト構造を表面と完全同期
+const APP_VERSION = "v1.8.4"; // 裏面アイコンfontSize:64で表面40pxを上回るサイズに
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -3733,8 +3733,8 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
               {isHigh&&<div style={{position:'absolute',inset:0,background:`radial-gradient(circle at center, ${backCol}33 0%, transparent 70%)`,pointerEvents:'none'}}/>}
               {/* レアラベル（左上） */}
               <div style={{position:'absolute',top:2,left:3,fontSize:7,fontWeight:900,color:backCol,opacity:0.85,letterSpacing:0.5,textShadow:`0 0 4px ${backCol}`,zIndex:2}}>{ic.label}</div>
-              {/* 中心アイコン（表面のスプライト40pxと同等の存在感に） */}
-              <div style={{fontSize:44,color:backCol,opacity:0.95,textShadow:`0 0 ${isHigh?14:10}px ${backCol},0 0 ${isHigh?22:16}px ${backCol}88`,zIndex:1,lineHeight:1,animation:isHigh?'pulse 1.4s ease-in-out infinite':'none'}}>{ic.icon}</div>
+              {/* 中心アイコン（絵文字の実描画 ≈ fontSize×0.75 なので 64で表面40pxを上回る） */}
+              <div style={{fontSize:64,color:backCol,opacity:0.95,textShadow:`0 0 ${isHigh?18:14}px ${backCol},0 0 ${isHigh?28:20}px ${backCol}88`,zIndex:1,lineHeight:1,height:48,display:'flex',alignItems:'center',justifyContent:'center',animation:isHigh?'pulse 1.4s ease-in-out infinite':'none'}}>{ic.icon}</div>
               {/* 下部の擬似ラベル（表面の名前と同じ位置・サイズで縦の使い方を揃える） */}
               <div style={{fontSize:8,fontWeight:900,color:backCol,marginTop:2,opacity:0.65,letterSpacing:1,zIndex:1}}>? ? ?</div>
             </div>;})()}
