@@ -92,6 +92,7 @@ const CSS = `
   @keyframes pulse  { 0%,100%{transform:scale(1)} 50%{transform:scale(1.06)} }
   @keyframes rotate { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
   @keyframes twinkle{ 0%,100%{opacity:0.3;transform:scale(0.8)} 50%{opacity:1;transform:scale(1.4)} }
+  @keyframes zoomInCard{ 0%{transform:scale(0.18) translateY(20px);opacity:0} 60%{transform:scale(1.08);opacity:1} 100%{transform:scale(1);opacity:1} }
 `;
 
 // ─── MONSTER SPRITES ──────────────────────────────────────
@@ -3214,6 +3215,55 @@ function GachaReveal({kind,results,onDone}){
   const nextIdxRef=useRef(0);
   const timerRef=useRef(null);
 
+  // 各カードの「現在表示する裏面レアリティ」を管理（昇格演出用）
+  // 通常は results[i].rarity と同じだが、昇格対象カードは初期段階で低レアから始まる
+  // promoteSeq[i] = ['C','R','SR','UR'] のような昇格手順配列（null=昇格なし）
+  // promoteStage[i] = 現在の表示段階（0始まり）
+  const promoteSeqRef=useRef(null);
+  const [promoteStage,setPromoteStage]=useState(()=>results.map(()=>0));
+
+  if(promoteSeqRef.current===null){
+    // 初期化: UR/LRカードの30%を昇格対象に選定（演出は引いた直後すでに表示される）
+    const seq=results.map(r=>{
+      if(kind!=='monster')return null; // 素材ガチャは昇格演出なし
+      const idx=RO.indexOf(r.rarity);
+      if(idx<3)return null; // C/R/SRは昇格演出なし（最初からその色で表示）
+      if(Math.random()>=0.30)return null; // 70%は通常表示
+      // 昇格演出: Cから順に上がる
+      const path=[];
+      for(let j=0;j<=idx;j++)path.push(RO[j]);
+      return path;
+    });
+    promoteSeqRef.current=seq;
+  }
+
+  // 昇格演出を進行: 該当カードのみ段階的にレア度を上げる
+  // めくる前のフェーズで色が上がっていく
+  useEffect(()=>{
+    if(zoomIdx!==null||done)return;
+    // 未めくりカードで昇格中のものを進める
+    const seq=promoteSeqRef.current;
+    let needTick=false;
+    seq.forEach((path,i)=>{
+      if(!path)return;
+      if(flipped[i])return;
+      if(promoteStage[i]<path.length-1)needTick=true;
+    });
+    if(!needTick)return;
+    const tid=setTimeout(()=>{
+      setPromoteStage(prev=>{
+        const a=[...prev];
+        seq.forEach((path,i)=>{
+          if(!path)return;
+          if(flipped[i])return;
+          if(a[i]<path.length-1)a[i]=a[i]+1;
+        });
+        return a;
+      });
+    },350);
+    return()=>clearTimeout(tid);
+  },[promoteStage,flipped,zoomIdx,done]);
+
   // 自動めくり
   useEffect(()=>{
     if(zoomIdx!==null||done)return;
@@ -3221,9 +3271,8 @@ function GachaReveal({kind,results,onDone}){
       const i=nextIdxRef.current;
       if(i>=results.length){setDone(true);return;}
       const r=results[i];
-      // モンスターガチャ＆新規取得 → 拡大演出
+      // モンスターガチャ＆新規取得 → ズームイン演出（先に該当カードへ寄ってからめくる）
       if(kind==='monster'&&r.isNew){
-        setFlipped(prev=>{const a=[...prev];a[i]=true;return a;});
         setZoomIdx(i);
         return;
       }
@@ -3234,11 +3283,25 @@ function GachaReveal({kind,results,onDone}){
     return()=>clearTimeout(timerRef.current);
   },[flipped,zoomIdx,done]);
 
+  // ズームイン演出: zoomIdxが立った瞬間にカードを裏のまま拡大、少し待ってめくる
+  const [zoomFlipped,setZoomFlipped]=useState(false);
+  useEffect(()=>{
+    if(zoomIdx===null){setZoomFlipped(false);return;}
+    // 約700ms後にめくる（ズームインの間が完成してからフリップ）
+    const tid=setTimeout(()=>{
+      setFlipped(prev=>{const a=[...prev];a[zoomIdx]=true;return a;});
+      setZoomFlipped(true);
+    },700);
+    return()=>clearTimeout(tid);
+  },[zoomIdx]);
+
   // 拡大演出のクローズ
   function closeZoom(){
     if(zoomIdx===null)return;
+    if(!zoomFlipped)return; // めくる前は閉じれない
     nextIdxRef.current=zoomIdx+1;
     setZoomIdx(null);
+    setZoomFlipped(false);
   }
 
   // 全部一気にめくる（スキップ）
@@ -3253,26 +3316,37 @@ function GachaReveal({kind,results,onDone}){
   const cols=results.length>=5?5:results.length;
   const rows=Math.ceil(results.length/cols);
 
-  // 拡大演出（モンスターのみ）
-  if(zoomIdx!==null&&kind==='monster'){
+  // ズームイン演出用のオーバーレイ（メイン画面はそのまま、上に被せる）
+  function renderZoomOverlay(){
+    if(zoomIdx===null||kind!=='monster')return null;
     const r=results[zoomIdx];const mi=MONS[r.type];const col=RC[r.rarity]||'#fff';
-    return <div onClick={closeZoom} style={{width:'100%',minHeight:'100vh',padding:14,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:14,cursor:'pointer',background:`radial-gradient(circle at center, ${col}44 0%, rgba(20,5,45,0.95) 70%)`,animation:'fadeIn 0.4s ease-out'}}>
-      {/* 放射状の光 */}
-      <div style={{position:'fixed',inset:0,pointerEvents:'none',background:`conic-gradient(from 0deg, transparent 0deg, ${col}44 10deg, transparent 20deg, transparent 40deg, ${col}33 50deg, transparent 60deg, transparent 90deg, ${col}55 100deg, transparent 110deg, transparent 140deg, ${col}33 150deg, transparent 160deg, transparent 180deg, ${col}44 190deg, transparent 200deg, transparent 230deg, ${col}33 240deg, transparent 250deg, transparent 280deg, ${col}55 290deg, transparent 300deg, transparent 330deg, ${col}44 340deg, transparent 350deg)`,animation:'rotate 8s linear infinite',opacity:0.6}}/>
-      {/* 派手な新規取得バナー */}
-      <div style={{fontSize:13,fontWeight:900,letterSpacing:3,color:col,background:'rgba(0,0,0,0.4)',padding:'6px 18px',borderRadius:20,border:`2px solid ${col}`,boxShadow:`0 0 24px ${col}aa`,animation:'glow 1.5s ease-in-out infinite',zIndex:2}}>✨ NEW モンスター ✨</div>
-      {/* 拡大カード */}
-      <div style={{...CARD,padding:'28px 20px',width:260,maxWidth:'90vw',background:`linear-gradient(135deg,${mi.bg}66,rgba(255,255,255,0.04))`,border:`3px solid ${col}`,boxShadow:`0 0 36px ${col}cc, inset 0 0 18px ${col}33`,animation:'pop 0.55s cubic-bezier(0.34,1.56,0.64,1)',position:'relative',zIndex:2}}>
-        {/* キラ星 */}
-        {[0,1,2,3,4,5].map(i=><div key={i} style={{position:'absolute',top:`${15+Math.sin(i*1.7)*40}%`,left:`${10+Math.cos(i*2.1)*38}%`,fontSize:14,color:col,opacity:0.7,animation:`twinkle ${1.4+i*0.2}s ease-in-out infinite`}}>✦</div>)}
-        <MonsterSprite type={r.type} size={120} anim="float"/>
-        <div style={{marginTop:14,fontSize:22,fontWeight:900,color:mi.color}}>{mi.name}</div>
-        <div style={{marginTop:8,display:'flex',justifyContent:'center',gap:6,flexWrap:'wrap'}}>
-          <Pill label={r.rarity} color={col}/>
-          <Pill label='NEW!' color='#ff6b9d'/>
+    return <div onClick={closeZoom} style={{position:'fixed',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:14,cursor:zoomFlipped?'pointer':'default',background:`radial-gradient(circle at center, ${col}33 0%, rgba(20,5,45,0.85) 70%)`,animation:'fadeIn 0.35s ease-out',zIndex:50,padding:14}}>
+      {/* 放射状の光（フリップ後のみ表示） */}
+      {zoomFlipped&&<div style={{position:'absolute',inset:0,pointerEvents:'none',background:`conic-gradient(from 0deg, transparent 0deg, ${col}44 10deg, transparent 20deg, transparent 40deg, ${col}33 50deg, transparent 60deg, transparent 90deg, ${col}55 100deg, transparent 110deg, transparent 140deg, ${col}33 150deg, transparent 160deg, transparent 180deg, ${col}44 190deg, transparent 200deg, transparent 230deg, ${col}33 240deg, transparent 250deg, transparent 280deg, ${col}55 290deg, transparent 300deg, transparent 330deg, ${col}44 340deg, transparent 350deg)`,animation:'rotate 8s linear infinite',opacity:0.55}}/>}
+      {/* NEW バナー（フリップ後に表示） */}
+      {zoomFlipped&&<div style={{fontSize:13,fontWeight:900,letterSpacing:3,color:col,background:'rgba(0,0,0,0.5)',padding:'6px 18px',borderRadius:20,border:`2px solid ${col}`,boxShadow:`0 0 24px ${col}aa`,animation:'glow 1.5s ease-in-out infinite',zIndex:2}}>✨ NEW モンスター ✨</div>}
+
+      {/* 拡大カード（裏→表のフリップを内側で再現） */}
+      <div style={{width:260,maxWidth:'82vw',aspectRatio:'2/3',perspective:'1000px',position:'relative',animation:'zoomInCard 0.55s cubic-bezier(0.34,1.56,0.64,1)',zIndex:2}}>
+        <div style={{position:'absolute',inset:0,transformStyle:'preserve-3d',transition:'transform 0.7s cubic-bezier(0.34,1.56,0.64,1)',transform:zoomFlipped?'rotateY(180deg)':'rotateY(0deg)'}}>
+          {/* 裏面（拡大版・本来のレア色） */}
+          <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',borderRadius:14,background:`linear-gradient(135deg,${col}44 0%,#1a0533 50%,${col}33 100%)`,border:`3px solid ${col}`,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:`0 0 30px ${col}aa,inset 0 0 24px ${col}55`}}>
+            <div style={{fontSize:80,color:col,opacity:0.8,animation:'pulse 1.4s ease-in-out infinite',textShadow:`0 0 18px ${col}`}}>✦</div>
+          </div>
+          {/* 表面（拡大版） */}
+          <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',transform:'rotateY(180deg)',borderRadius:14,padding:'28px 20px',background:`linear-gradient(135deg,${mi.bg}66,rgba(255,255,255,0.04))`,border:`3px solid ${col}`,boxShadow:`0 0 36px ${col}cc, inset 0 0 18px ${col}33`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:8,position:'relative',overflow:'hidden'}}>
+            {/* キラ星 */}
+            {[0,1,2,3,4,5].map(i=><div key={i} style={{position:'absolute',top:`${15+Math.sin(i*1.7)*40}%`,left:`${10+Math.cos(i*2.1)*38}%`,fontSize:14,color:col,opacity:0.7,animation:`twinkle ${1.4+i*0.2}s ease-in-out infinite`}}>✦</div>)}
+            <MonsterSprite type={r.type} size={110} anim="float"/>
+            <div style={{fontSize:20,fontWeight:900,color:mi.color}}>{mi.name}</div>
+            <div style={{display:'flex',justifyContent:'center',gap:6,flexWrap:'wrap'}}>
+              <Pill label={r.rarity} color={col}/>
+              <Pill label='NEW!' color='#ff6b9d'/>
+            </div>
+          </div>
         </div>
       </div>
-      <div style={{fontSize:11,opacity:0.6,zIndex:2}}>タップで続ける →</div>
+      {zoomFlipped&&<div style={{fontSize:11,opacity:0.6,zIndex:2}}>タップで続ける →</div>}
     </div>;
   }
 
@@ -3336,15 +3410,22 @@ function GachaReveal({kind,results,onDone}){
       </div>
       <div style={{fontSize:10,opacity:0.5,marginTop:3}}>{flipped.filter(Boolean).length}/{results.length} 開封中</div>
     </div>
-    <div style={{display:'grid',gridTemplateColumns:`repeat(${cols},1fr)`,gap:8,marginBottom:14}}>
+    <div style={{display:'grid',gridTemplateColumns:`repeat(${cols},1fr)`,gap:8,marginBottom:14,position:'relative'}}>
       {results.map((r,i)=>{
         const col=RC[r.rarity]||'#fff';
         const flippedI=flipped[i];
-        return <div key={i} style={{aspectRatio:'2/3',perspective:'600px',position:'relative'}}>
+        // 現在表示すべき裏面色: 昇格演出中なら段階に応じた色、それ以外は本来の色
+        const backRar=(promoteSeqRef.current?.[i]?.[promoteStage[i]])||r.rarity;
+        const backCol=RC[backRar]||'#fff';
+        // 昇格中のカードはやや派手なエフェクト
+        const isPromoting=promoteSeqRef.current?.[i]&&promoteStage[i]>0&&!flippedI;
+        // ズーム対象は元位置で非表示にする
+        const isZoomTarget=zoomIdx===i;
+        return <div key={i} style={{aspectRatio:'2/3',perspective:'600px',position:'relative',opacity:isZoomTarget?0.15:1,transition:'opacity 0.4s'}}>
           <div style={{position:'absolute',inset:0,transformStyle:'preserve-3d',transition:'transform 0.55s cubic-bezier(0.34,1.56,0.64,1)',transform:flippedI?'rotateY(180deg)':'rotateY(0deg)'}}>
-            {/* 裏面 */}
-            <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',borderRadius:8,background:'linear-gradient(135deg,#1a0533 0%,#2d1054 50%,#1a0533 100%)',border:'1.5px solid rgba(191,136,255,0.4)',display:'flex',alignItems:'center',justifyContent:'center',boxShadow:'0 2px 8px rgba(0,0,0,0.3),inset 0 0 14px rgba(191,136,255,0.15)'}}>
-              <div style={{fontSize:22,color:'rgba(191,136,255,0.5)'}}>✦</div>
+            {/* 裏面（レア色反映） */}
+            <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',borderRadius:8,background:`linear-gradient(135deg,${backCol}33 0%,#1a0533 55%,${backCol}22 100%)`,border:`1.5px solid ${backCol}aa`,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:`0 2px 8px rgba(0,0,0,0.3),inset 0 0 14px ${backCol}33${isPromoting?',0 0 18px '+backCol+'cc':''}`,transition:'all 0.35s ease',animation:isPromoting?'pulse 0.7s ease-in-out infinite':'none'}}>
+              <div style={{fontSize:22,color:backCol,opacity:0.75,textShadow:`0 0 8px ${backCol}`}}>✦</div>
             </div>
             {/* 表面 */}
             <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',borderRadius:8,transform:'rotateY(180deg)',background:kind==='monster'?`linear-gradient(135deg,${MONS[r.type]?.bg||col}44,${col}22)`:`linear-gradient(135deg,${col}33,${col}11)`,border:`2px solid ${col}`,boxShadow:`0 0 10px ${col}77,inset 0 0 8px ${col}33`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:4,overflow:'hidden'}}>
@@ -3363,6 +3444,7 @@ function GachaReveal({kind,results,onDone}){
       })}
     </div>
     <button onClick={skipAll} disabled={zoomIdx!==null} style={{...FF,width:'100%',padding:'10px 0',borderRadius:11,border:'1px solid rgba(255,255,255,0.15)',background:'rgba(255,255,255,0.05)',color:'rgba(255,255,255,0.7)',cursor:zoomIdx!==null?'default':'pointer',fontSize:11,fontWeight:700}}>⏭ 全てめくる</button>
+    {renderZoomOverlay()}
   </div>;
 }
 
