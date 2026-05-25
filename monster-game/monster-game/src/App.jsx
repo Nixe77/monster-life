@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v1.8.7"; // カードサイズwidth/height固定+LR昇格を3段階に統一
+const APP_VERSION = "v1.8.8"; // カードabsolute配置で横長解消+背面透け防止
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -3562,11 +3562,11 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
       {/* LEVEL UP! テキスト（中間段階で出現） */}
       {levelUpText&&<div key={`lu${flashKey}`} style={{position:'absolute',top:'30%',left:'50%',fontSize:24,fontWeight:900,letterSpacing:2,color:bc,textShadow:`0 0 12px ${bc},0 0 24px ${bc},0 0 36px ${bc}aa,2px 2px 0 rgba(0,0,0,0.6)`,animation:'burstText 1s cubic-bezier(0.34,1.56,0.64,1) forwards',zIndex:4,pointerEvents:'none',whiteSpace:'nowrap'}}>{levelUpText}</div>}
 
-      {/* 拡大カード（width/heightを完全固定してflex圧縮を防止） */}
-      <div style={{width:220,height:330,perspective:'1000px',position:'relative',animation:'zoomInCard 0.55s cubic-bezier(0.34,1.56,0.64,1)',zIndex:2,flexShrink:0}}>
+      {/* 拡大カード（absolute中央配置でflexから切り離し、サイズを完全固定） */}
+      <div style={{position:'absolute',top:'50%',left:'50%',marginLeft:-110,marginTop:-165,width:220,height:330,perspective:'1000px',animation:'zoomInCard 0.55s cubic-bezier(0.34,1.56,0.64,1)',zIndex:2}}>
         <div style={{position:'absolute',inset:0,transformStyle:'preserve-3d',transition:'transform 0.7s cubic-bezier(0.34,1.56,0.64,1)',transform:`rotateY(${zoomRotation}deg)`}}>
           {/* 表側面 (faceA) - 偶数段階で表示、最終段階のrotation%360===0なら表面 */}
-          <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',transform:'translateZ(1px)',borderRadius:14,overflow:'hidden'}}>
+          <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',WebkitBackfaceVisibility:'hidden',transform:'translateZ(1px)',borderRadius:14,overflow:'hidden',background:'#0a0014'}}>
             {zoomFlipped&&(zoomRotation%360===0)?(
               /* 表面コンテンツ (LR等の最終段階) */
               <div style={{position:'absolute',inset:0,padding:'28px 20px',background:`linear-gradient(135deg,${mi.bg}66,rgba(255,255,255,0.04))`,border:`3px solid ${col}`,borderRadius:14,boxShadow:`0 0 36px ${col}cc, inset 0 0 18px ${col}33`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:8,overflow:'hidden'}}>
@@ -3589,7 +3589,7 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
             )}
           </div>
           {/* 裏側面 (faceB) - 奇数段階で表示、最終段階のrotation%360===180なら表面 */}
-          <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',transform:'rotateY(180deg) translateZ(1px)',borderRadius:14,overflow:'hidden'}}>
+          <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',WebkitBackfaceVisibility:'hidden',transform:'rotateY(180deg) translateZ(1px)',borderRadius:14,overflow:'hidden',background:'#0a0014'}}>
             {zoomFlipped&&(zoomRotation%360===180)?(
               /* 表面コンテンツ (UR等の最終段階) */
               <div style={{position:'absolute',inset:0,padding:'28px 20px',background:`linear-gradient(135deg,${mi.bg}66,rgba(255,255,255,0.04))`,border:`3px solid ${col}`,borderRadius:14,boxShadow:`0 0 36px ${col}cc, inset 0 0 18px ${col}33`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:8,overflow:'hidden'}}>
