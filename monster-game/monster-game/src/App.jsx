@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v2.0.8"; // ハンバーガーメニュー追加(図鑑/設定/セーブ/プレゼント/クラウド同期)
+const APP_VERSION = "v2.0.9"; // 図鑑リセット遡及処理(既存所持モンスター分のダイヤを未受取に追加)
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -887,6 +887,7 @@ const DEFAULT_STATE={coins:400,diamonds:0,monsters:[{...mkMon('mofurun',1),name:
   materials:{},equipInventory:_initialEquip(),
   gems:[], // 宝石インベントリ ({id,color,star})
   dex:{monsters:['mofurun'],enemies:[],pendingDiamonds:0}, // 図鑑: 取得済みmonster type/撃退済みenemy type/未受取ダイヤ
+  dexResetV1:true, // 図鑑リセット遡及処理(v2.0.9)完了フラグ - 新規プレイヤーはリセット済み扱い
   shop:{listings:[],pendingGold:0},facilities:{},
   settings:{battleSpeed:1, animations:true, autoNextNode:true, confirmSell:true}, // 戦闘速度・アニメON/OFF等
   screen:'home',toast:null};
@@ -1022,15 +1023,27 @@ function migrateSave(p){
     gems:Array.isArray(p.gems)?p.gems.filter(g=>g&&g.id&&GEM_COLORS.includes(g.color)&&g.star>=1&&g.star<=10):[],
     // ダイヤ通貨（旧セーブには存在しない → 0）
     diamonds:typeof p.diamonds==='number'?p.diamonds:0,
-    // 図鑑（旧セーブには存在しない → 既存モンスターtypeから自動構築）
+    // 図鑑（リセット遡及処理: 図鑑実装初期にダイヤを取り損ねた既存モンスター分を遡及付与）
     dex:(()=>{
-      const m=Array.isArray(p.dex?.monsters)?p.dex.monsters.filter(t=>MONS[t]):[];
-      const e=Array.isArray(p.dex?.enemies)?p.dex.enemies.filter(t=>ENEMIES[t]):[];
+      const existingM=Array.isArray(p.dex?.monsters)?p.dex.monsters.filter(t=>MONS[t]):[];
+      const existingE=Array.isArray(p.dex?.enemies)?p.dex.enemies.filter(t=>ENEMIES[t]):[];
       const pending=typeof p.dex?.pendingDiamonds==='number'?p.dex.pendingDiamonds:0;
-      // 既存モンスターのtypeを図鑑にマージ（取得済みなのに未登録なケース、自動受取扱い）
-      mons.forEach(mm=>{if(MONS[mm.type]&&!m.includes(mm.type))m.push(mm.type);});
-      return{monsters:m,enemies:e,pendingDiamonds:pending};
+      if(!p.dexResetV1){
+        // 1回限りのリセット: 既存図鑑を空にし、所持モンスター分のダイヤを遡及付与
+        const uniqueOwnedTypes=new Set();
+        mons.forEach(mm=>{if(MONS[mm.type])uniqueOwnedTypes.add(mm.type);});
+        const monsList=[...uniqueOwnedTypes];
+        return{
+          monsters:monsList,
+          enemies:[], // 敵は撃退記録がないため遡及不可、今後撃退で登録
+          pendingDiamonds:pending+monsList.length*5, // 既存未受取 + 遡及分
+        };
+      }
+      // 通常運用: 既存dexを維持し、所持モンスターのうち未登録のものをマージ（ダイヤなし）
+      mons.forEach(mm=>{if(MONS[mm.type]&&!existingM.includes(mm.type))existingM.push(mm.type);});
+      return{monsters:existingM,enemies:existingE,pendingDiamonds:pending};
     })(),
+    dexResetV1:true, // 遡及処理完了フラグ（次回以降はスキップ）
     shop:{listings,pendingGold:p.shop?.pendingGold||0,autoList:!!p.shop?.autoList},
     facilities:p.facilities||{},
     playerLv:p.playerLv||1,
