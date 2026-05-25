@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v1.8.4"; // 裏面アイコンfontSize:64で表面40pxを上回るサイズに
+const APP_VERSION = "v1.8.5"; // 裏面装飾を最初のシンプル版に戻す
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -3579,20 +3579,13 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
                 </div>
               </div>
             ):(
-              /* 裏面 A (3グループ識別) */
-              (()=>{const icA=backIconOf(rarA);const grpA=rarityGroup(rarA);const isHighA=grpA==='high';const isMidA=grpA==='mid';
-              return <div style={{position:'absolute',inset:0,borderRadius:14,background:`linear-gradient(135deg,${bcA}44 0%,#1a0533 50%,${bcA}33 100%)`,border:`3px solid ${bcA}`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',boxShadow:`0 0 30px ${bcA}aa,inset 0 0 24px ${bcA}55`,overflow:'hidden',position:'relative'}}>
-                {/* 高レア背景: 放射状 */}
-                {isHighA&&<div style={{position:'absolute',inset:0,background:`radial-gradient(circle at center, ${bcA}44 0%, transparent 70%)`,pointerEvents:'none'}}/>}
-                {/* 角のレアラベル */}
-                <div style={{position:'absolute',top:8,left:10,fontSize:14,fontWeight:900,color:bcA,letterSpacing:1,textShadow:`0 0 8px ${bcA}`,zIndex:2}}>{icA.label}</div>
-                <div style={{position:'absolute',bottom:8,right:10,fontSize:14,fontWeight:900,color:bcA,letterSpacing:1,textShadow:`0 0 8px ${bcA}`,zIndex:2,transform:'rotate(180deg)'}}>{icA.label}</div>
+              /* 裏面 A（シンプル版に戻す: ✦ マーク1つ + キラ星） */
+              <div style={{position:'absolute',inset:0,borderRadius:14,background:`linear-gradient(135deg,${bcA}44 0%,#1a0533 50%,${bcA}33 100%)`,border:`3px solid ${bcA}`,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:`0 0 30px ${bcA}aa,inset 0 0 24px ${bcA}55`,overflow:'hidden',position:'relative'}}>
                 {/* キラ星 */}
                 {[0,1,2,3,4,5,6,7].map(k=><div key={k} style={{position:'absolute',top:`${10+Math.sin(k*1.9)*42}%`,left:`${8+Math.cos(k*2.3)*42}%`,fontSize:10+(k%3)*3,color:bcA,opacity:0.6,animation:`twinkle ${1.2+k*0.18}s ease-in-out infinite`,textShadow:`0 0 6px ${bcA}`}}>✦</div>)}
-                {/* 中心アイコン（サイズ統一: 80px） */}
-                <div style={{fontSize:80,color:bcA,opacity:0.95,animation:'pulse 1.0s ease-in-out infinite',textShadow:`0 0 28px ${bcA},0 0 56px ${bcA}aa`,zIndex:1}}>{icA.icon}</div>
-                {(isMidA||isHighA)&&<div style={{fontSize:14,color:bcA,opacity:0.8,marginTop:4,letterSpacing:6,textShadow:`0 0 8px ${bcA}`,zIndex:1}}>{icA.sub}</div>}
-              </div>;})()
+                {/* 中心の大きな星 */}
+                <div style={{fontSize:80,color:bcA,opacity:0.85,animation:'pulse 1.4s ease-in-out infinite',textShadow:`0 0 18px ${bcA}`,zIndex:1}}>✦</div>
+              </div>
             )}
           </div>
           {/* 裏側面 (faceB) - 奇数段階で表示、最終段階のrotation%360===180なら表面 */}
@@ -3609,16 +3602,11 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
                 </div>
               </div>
             ):(
-              /* 裏面 B (3グループ識別) */
-              (()=>{const icB=backIconOf(rarB);const grpB=rarityGroup(rarB);const isHighB=grpB==='high';const isMidB=grpB==='mid';
-              return <div style={{position:'absolute',inset:0,borderRadius:14,background:`linear-gradient(135deg,${bcB}44 0%,#1a0533 50%,${bcB}33 100%)`,border:`3px solid ${bcB}`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',boxShadow:`0 0 30px ${bcB}aa,inset 0 0 24px ${bcB}55`,overflow:'hidden',position:'relative'}}>
-                {isHighB&&<div style={{position:'absolute',inset:0,background:`radial-gradient(circle at center, ${bcB}44 0%, transparent 70%)`,pointerEvents:'none'}}/>}
-                <div style={{position:'absolute',top:8,left:10,fontSize:14,fontWeight:900,color:bcB,letterSpacing:1,textShadow:`0 0 8px ${bcB}`,zIndex:2}}>{icB.label}</div>
-                <div style={{position:'absolute',bottom:8,right:10,fontSize:14,fontWeight:900,color:bcB,letterSpacing:1,textShadow:`0 0 8px ${bcB}`,zIndex:2,transform:'rotate(180deg)'}}>{icB.label}</div>
+              /* 裏面 B（シンプル版に戻す: ✦ マーク1つ + キラ星） */
+              <div style={{position:'absolute',inset:0,borderRadius:14,background:`linear-gradient(135deg,${bcB}44 0%,#1a0533 50%,${bcB}33 100%)`,border:`3px solid ${bcB}`,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:`0 0 30px ${bcB}aa,inset 0 0 24px ${bcB}55`,overflow:'hidden',position:'relative'}}>
                 {[0,1,2,3,4,5,6,7].map(k=><div key={k} style={{position:'absolute',top:`${10+Math.sin(k*1.9)*42}%`,left:`${8+Math.cos(k*2.3)*42}%`,fontSize:10+(k%3)*3,color:bcB,opacity:0.6,animation:`twinkle ${1.2+k*0.18}s ease-in-out infinite`,textShadow:`0 0 6px ${bcB}`}}>✦</div>)}
-                <div style={{fontSize:80,color:bcB,opacity:0.95,animation:'pulse 1.0s ease-in-out infinite',textShadow:`0 0 28px ${bcB},0 0 56px ${bcB}aa`,zIndex:1}}>{icB.icon}</div>
-                {(isMidB||isHighB)&&<div style={{fontSize:14,color:bcB,opacity:0.8,marginTop:4,letterSpacing:6,textShadow:`0 0 8px ${bcB}`,zIndex:1}}>{icB.sub}</div>}
-              </div>;})()
+                <div style={{fontSize:80,color:bcB,opacity:0.85,animation:'pulse 1.4s ease-in-out infinite',textShadow:`0 0 18px ${bcB}`,zIndex:1}}>✦</div>
+              </div>
             )}
           </div>
         </div>
@@ -3724,20 +3712,10 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
         const isZoomTarget=zoomIdx===i;
         return <div key={i} style={{aspectRatio:'2/3',perspective:'600px',position:'relative',opacity:isZoomTarget?0.15:1,transition:'opacity 0.4s'}}>
           <div style={{position:'absolute',inset:0,transformStyle:'preserve-3d',transition:'transform 0.55s cubic-bezier(0.34,1.56,0.64,1)',transform:flippedI?'rotateY(180deg)':'rotateY(0deg)'}}>
-            {/* 裏面（3グループ識別: 表面と完全に同じレイアウト構造） */}
-            {(()=>{const ic=backIconOf(backRar);
-            const grp=rarityGroup(backRar);
-            const isHigh=grp==='high';
-            return <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',borderRadius:8,background:`linear-gradient(135deg,${backCol}33 0%,#1a0533 55%,${backCol}22 100%)`,border:`2px solid ${backCol}`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:4,boxShadow:`0 2px 8px rgba(0,0,0,0.3),inset 0 0 14px ${backCol}33${isHigh?',0 0 12px '+backCol+'88':''}`,overflow:'hidden',position:'relative'}}>
-              {/* 高レア背景: 放射状 */}
-              {isHigh&&<div style={{position:'absolute',inset:0,background:`radial-gradient(circle at center, ${backCol}33 0%, transparent 70%)`,pointerEvents:'none'}}/>}
-              {/* レアラベル（左上） */}
-              <div style={{position:'absolute',top:2,left:3,fontSize:7,fontWeight:900,color:backCol,opacity:0.85,letterSpacing:0.5,textShadow:`0 0 4px ${backCol}`,zIndex:2}}>{ic.label}</div>
-              {/* 中心アイコン（絵文字の実描画 ≈ fontSize×0.75 なので 64で表面40pxを上回る） */}
-              <div style={{fontSize:64,color:backCol,opacity:0.95,textShadow:`0 0 ${isHigh?18:14}px ${backCol},0 0 ${isHigh?28:20}px ${backCol}88`,zIndex:1,lineHeight:1,height:48,display:'flex',alignItems:'center',justifyContent:'center',animation:isHigh?'pulse 1.4s ease-in-out infinite':'none'}}>{ic.icon}</div>
-              {/* 下部の擬似ラベル（表面の名前と同じ位置・サイズで縦の使い方を揃える） */}
-              <div style={{fontSize:8,fontWeight:900,color:backCol,marginTop:2,opacity:0.65,letterSpacing:1,zIndex:1}}>? ? ?</div>
-            </div>;})()}
+            {/* 裏面（最初のシンプル版に戻す: レア色 + ✦ マーク1つだけ） */}
+            <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',borderRadius:8,background:`linear-gradient(135deg,${backCol}33 0%,#1a0533 55%,${backCol}22 100%)`,border:`1.5px solid ${backCol}aa`,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:`0 2px 8px rgba(0,0,0,0.3),inset 0 0 14px ${backCol}33`}}>
+              <div style={{fontSize:22,color:backCol,opacity:0.75,textShadow:`0 0 8px ${backCol}`}}>✦</div>
+            </div>
             {/* 表面 */}
             <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',borderRadius:8,transform:'rotateY(180deg)',background:kind==='monster'?`linear-gradient(135deg,${MONS[r.type]?.bg||col}44,${col}22)`:`linear-gradient(135deg,${col}33,${col}11)`,border:`2px solid ${col}`,boxShadow:`0 0 10px ${col}77,inset 0 0 8px ${col}33`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:4,overflow:'hidden'}}>
               {kind==='monster'?<>
