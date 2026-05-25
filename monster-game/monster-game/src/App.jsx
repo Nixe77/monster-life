@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v1.9.5"; // 設定ボタン強調+設定に自動出品追加+autoList永続化バグ修正
+const APP_VERSION = "v1.9.6"; // 一括売却にC/R/SR/UR/★5達成済の選択ボタン拡張
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -4702,11 +4702,17 @@ function SellPanel({s,d}){
     if(next.has(id))next.delete(id);else next.add(id);
     setSelected(next);
   }
-  function selectLowRare(){
+  // レア指定で一括選択
+  function selectByRare(rarities){
     setSelected(new Set(items.filter(it=>{
       const r=mode==='monster'?it.rarity:getEqRarity(it);
-      return r==='C'||r==='R';
+      return rarities.includes(r);
     }).map(it=>it.id)));
+  }
+  // ★5達成済み（lb=5）の重複モンスターのみ一括選択（モンスター時のみ有効）
+  function selectMaxLb(){
+    if(mode!=='monster')return;
+    setSelected(new Set(monCands.filter(m=>(m.lb||0)>=5).map(m=>m.id)));
   }
   function clearSel(){setSelected(new Set());}
   function execute(){
@@ -4733,9 +4739,14 @@ function SellPanel({s,d}){
       </div>
     </div>
 
-    {/* 一括選択 */}
-    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6,marginBottom:8}}>
-      <button onClick={selectLowRare} style={{...FF,padding:'7px 0',borderRadius:10,border:'1px solid rgba(33,150,243,0.4)',background:'rgba(33,150,243,0.08)',color:'#42a5f5',cursor:'pointer',fontSize:10,fontWeight:700}}>C/R全選択</button>
+    {/* 一括選択 (1段目: レア別、2段目: 補助操作) */}
+    <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:5,marginBottom:5}}>
+      <button onClick={()=>selectByRare(['C','R'])} style={{...FF,padding:'7px 0',borderRadius:10,border:'1px solid rgba(33,150,243,0.4)',background:'rgba(33,150,243,0.08)',color:'#42a5f5',cursor:'pointer',fontSize:10,fontWeight:700}}>C/R</button>
+      <button onClick={()=>selectByRare(['SR'])} style={{...FF,padding:'7px 0',borderRadius:10,border:'1px solid rgba(191,136,255,0.4)',background:'rgba(191,136,255,0.08)',color:'#bf88ff',cursor:'pointer',fontSize:10,fontWeight:700}}>SR</button>
+      <button onClick={()=>selectByRare(['UR'])} style={{...FF,padding:'7px 0',borderRadius:10,border:'1px solid rgba(255,215,0,0.4)',background:'rgba(255,215,0,0.08)',color:'#ffd700',cursor:'pointer',fontSize:10,fontWeight:700}}>UR</button>
+    </div>
+    <div style={{display:'grid',gridTemplateColumns:mode==='monster'?'1fr 1fr 1fr':'1fr 1fr',gap:5,marginBottom:8}}>
+      {mode==='monster'&&<button onClick={selectMaxLb} style={{...FF,padding:'7px 0',borderRadius:10,border:'1px solid rgba(224,64,251,0.4)',background:'rgba(224,64,251,0.08)',color:'#e040fb',cursor:'pointer',fontSize:10,fontWeight:700}}>★5達成済</button>}
       <button onClick={()=>setSelected(new Set(items.map(it=>it.id)))} style={{...FF,padding:'7px 0',borderRadius:10,border:'1px solid rgba(255,255,255,0.15)',background:'rgba(255,255,255,0.04)',color:'#fff',cursor:'pointer',fontSize:10,fontWeight:700}}>全選択</button>
       <button onClick={clearSel} disabled={selected.size===0} style={{...FF,padding:'7px 0',borderRadius:10,border:'1px solid rgba(239,83,80,0.4)',background:selected.size>0?'rgba(239,83,80,0.08)':'rgba(255,255,255,0.04)',color:selected.size>0?'#ef5350':'rgba(255,255,255,0.3)',cursor:selected.size>0?'pointer':'default',fontSize:10,fontWeight:700}}>クリア</button>
     </div>
