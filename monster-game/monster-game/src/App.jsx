@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v1.8.6"; // LR演出時のカード圧縮防止 (flexShrink:0)
+const APP_VERSION = "v1.8.7"; // カードサイズwidth/height固定+LR昇格を3段階に統一
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -3365,15 +3365,15 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
 
   if(promoteSeqRef.current===null){
     // 初期化: UR/LRカードの30%を昇格対象に選定
-    // UR: 3段階 (C → SR → UR)
-    // LR: 4段階 (C → SR → UR → LR) ← より派手
+    // UR/LR ともに 3段階 (C → SR → 金) - 裏面色が3種類しかないので統一
+    // LR の特別性は虹色オーラ・専用バナー・最終バナーで担保
     const seq=results.map(r=>{
       if(kind!=='monster')return null; // 素材ガチャは昇格演出なし
       const idx=RO.indexOf(r.rarity);
       if(idx<3)return null; // C/R/SRは演出なし（UR以上のみ昇格演出対象）
       if(Math.random()>=0.30)return null; // 70%は通常表示
-      if(r.rarity==='LR')return ['C','SR','UR','LR']; // LRは4段階
-      return ['C','SR','UR']; // URは3段階
+      // UR/LR共通: 銀青 → 紫 → 金 の3段階（金の連続を防ぐ）
+      return ['C','SR',r.rarity];
     });
     promoteSeqRef.current=seq;
   }
@@ -3562,8 +3562,8 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
       {/* LEVEL UP! テキスト（中間段階で出現） */}
       {levelUpText&&<div key={`lu${flashKey}`} style={{position:'absolute',top:'30%',left:'50%',fontSize:24,fontWeight:900,letterSpacing:2,color:bc,textShadow:`0 0 12px ${bc},0 0 24px ${bc},0 0 36px ${bc}aa,2px 2px 0 rgba(0,0,0,0.6)`,animation:'burstText 1s cubic-bezier(0.34,1.56,0.64,1) forwards',zIndex:4,pointerEvents:'none',whiteSpace:'nowrap'}}>{levelUpText}</div>}
 
-      {/* 拡大カード（多段階フリップ・2面構造、flex圧縮防止） */}
-      <div style={{width:260,maxWidth:'82vw',aspectRatio:'2/3',perspective:'1000px',position:'relative',animation:'zoomInCard 0.55s cubic-bezier(0.34,1.56,0.64,1)',zIndex:2,flexShrink:0}}>
+      {/* 拡大カード（width/heightを完全固定してflex圧縮を防止） */}
+      <div style={{width:220,height:330,perspective:'1000px',position:'relative',animation:'zoomInCard 0.55s cubic-bezier(0.34,1.56,0.64,1)',zIndex:2,flexShrink:0}}>
         <div style={{position:'absolute',inset:0,transformStyle:'preserve-3d',transition:'transform 0.7s cubic-bezier(0.34,1.56,0.64,1)',transform:`rotateY(${zoomRotation}deg)`}}>
           {/* 表側面 (faceA) - 偶数段階で表示、最終段階のrotation%360===0なら表面 */}
           <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',transform:'translateZ(1px)',borderRadius:14,overflow:'hidden'}}>
