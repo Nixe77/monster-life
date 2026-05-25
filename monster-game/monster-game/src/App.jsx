@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v1.9.3"; // 中間ゾーン強制非表示+タップ待機+キャラ拡大(110→150)
+const APP_VERSION = "v1.9.4"; // 単発演出強化+レア別段階+単発スキップ非表示+タップUI洗練
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -3366,14 +3366,23 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
   const promoteSeqRef=useRef(null);
 
   if(promoteSeqRef.current===null){
-    // 初期化: UR/LRカードの30%を昇格対象に選定
-    // 銀青 → 紫 → 金 の3段階の裏面表示 + フリップ
+    // 初期化: 昇格パスを生成
+    // 10連時: UR/LR の30%を選定して段階演出
+    // 単発時: 全レアで演出を発動（レア度に応じて段階数を変える）
+    const isSingleInit=results.length===1;
     const seq=results.map(r=>{
       if(kind!=='monster')return null; // 素材ガチャは昇格演出なし
       const idx=RO.indexOf(r.rarity);
-      if(idx<3)return null; // C/R/SRは演出なし（UR以上のみ昇格演出対象）
+      if(isSingleInit){
+        // 単発: レア度に応じた段階数（C/Rは段階なし、SR以上は派手に）
+        if(r.rarity==='C'||r.rarity==='R')return null; // C/Rは通常ズームのみ
+        if(r.rarity==='SR')return ['C','SR']; // 銀青→紫
+        if(r.rarity==='UR')return ['C','SR','UR']; // 銀青→紫→金
+        return ['C','SR','LR']; // LR: 銀青→紫→金(LRは特別演出付き)
+      }
+      // 10連時の既存ロジック
+      if(idx<3)return null; // C/R/SRは演出なし
       if(Math.random()>=0.30)return null; // 70%は通常表示
-      // UR/LR共通: 銀青 → 紫 → 金 → (フリップ) → 表面 の3段階裏面
       return ['C','SR',r.rarity];
     });
     promoteSeqRef.current=seq;
@@ -3389,9 +3398,10 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
       const i=nextIdxRef.current;
       if(i>=results.length){setAwaitTap(true);return;} // 全めくり完了 → タップ待ち
       const r=results[i];
-      // ズーム発動条件: 新規 OR LR OR 昇格対象（SR以上の60%）
+      // ズーム発動条件: 単発(必ず) OR 新規 OR LR OR 昇格対象
       const hasPromote=!!promoteSeqRef.current?.[i];
-      if(kind==='monster'&&(r.isNew||r.rarity==='LR'||hasPromote)){
+      const isSingle=results.length===1;
+      if(kind==='monster'&&(isSingle||r.isNew||r.rarity==='LR'||hasPromote)){
         setZoomIdx(i);
         return;
       }
@@ -3739,11 +3749,11 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
         </div>;
       })}
     </div>
-    <button onClick={skipAll} disabled={zoomIdx!==null||skipping} style={{...FF,width:'100%',padding:'10px 0',borderRadius:11,border:'1px solid rgba(255,255,255,0.15)',background:skipping?'rgba(191,136,255,0.15)':'rgba(255,255,255,0.05)',color:skipping?'#bf88ff':'rgba(255,255,255,0.7)',cursor:zoomIdx!==null||skipping?'default':'pointer',fontSize:11,fontWeight:700}}>{skipping?'⏩ スキップ中…':'⏭ 演出スキップ'}</button>
+    {results.length>1&&<button onClick={skipAll} disabled={zoomIdx!==null||skipping} style={{...FF,width:'100%',padding:'10px 0',borderRadius:11,border:'1px solid rgba(255,255,255,0.15)',background:skipping?'rgba(191,136,255,0.15)':'rgba(255,255,255,0.05)',color:skipping?'#bf88ff':'rgba(255,255,255,0.7)',cursor:zoomIdx!==null||skipping?'default':'pointer',fontSize:11,fontWeight:700}}>{skipping?'⏩ スキップ中…':'⏭ 演出スキップ'}</button>}
     {renderZoomOverlay()}
-    {/* 全めくり完了 → タップ待ちオーバーレイ（自動でリザルトに飛ばないように） */}
-    {awaitTap&&zoomIdx===null&&<div onClick={()=>{setAwaitTap(false);setDone(true);}} style={{position:'fixed',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'flex-end',paddingBottom:80,cursor:'pointer',zIndex:40,background:'rgba(0,0,0,0)',animation:'fadeIn 0.4s ease-out'}}>
-      <div style={{...FF,padding:'14px 32px',borderRadius:24,background:'linear-gradient(135deg,#bf88ff,#ff9fcf)',color:'#fff',fontSize:14,fontWeight:900,boxShadow:'0 0 24px rgba(191,136,255,0.6),inset 0 0 12px rgba(255,255,255,0.2)',animation:'pulse 1.4s ease-in-out infinite',letterSpacing:1}}>👆 タップして結果へ</div>
+    {/* 全めくり完了 → タップ待ちオーバーレイ（控えめなガラス調デザイン） */}
+    {awaitTap&&zoomIdx===null&&<div onClick={()=>{setAwaitTap(false);setDone(true);}} style={{position:'fixed',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'flex-end',paddingBottom:60,cursor:'pointer',zIndex:40,animation:'fadeIn 0.5s ease-out'}}>
+      <div style={{...FF,padding:'9px 22px',borderRadius:22,background:'rgba(255,255,255,0.07)',backdropFilter:'blur(12px)',WebkitBackdropFilter:'blur(12px)',border:'1px solid rgba(255,255,255,0.18)',color:'rgba(255,255,255,0.88)',fontSize:11,fontWeight:600,letterSpacing:1.2,boxShadow:'0 4px 20px rgba(0,0,0,0.35)',animation:'pulse 2s ease-in-out infinite'}}>タップで続ける →</div>
     </div>}
   </div>;
 }
