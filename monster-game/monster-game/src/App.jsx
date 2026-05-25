@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v1.8.8"; // カードabsolute配置で横長解消+背面透け防止
+const APP_VERSION = "v1.8.9"; // position重複バグ修正(裏面A/Bが半分のサイズになる現象)
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -3580,7 +3580,7 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
               </div>
             ):(
               /* 裏面 A（シンプル版に戻す: ✦ マーク1つ + キラ星） */
-              <div style={{position:'absolute',inset:0,borderRadius:14,background:`linear-gradient(135deg,${bcA}44 0%,#1a0533 50%,${bcA}33 100%)`,border:`3px solid ${bcA}`,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:`0 0 30px ${bcA}aa,inset 0 0 24px ${bcA}55`,overflow:'hidden',position:'relative'}}>
+              <div style={{position:'absolute',inset:0,borderRadius:14,background:`linear-gradient(135deg,${bcA}44 0%,#1a0533 50%,${bcA}33 100%)`,border:`3px solid ${bcA}`,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:`0 0 30px ${bcA}aa,inset 0 0 24px ${bcA}55`,overflow:'hidden'}}>
                 {/* キラ星 */}
                 {[0,1,2,3,4,5,6,7].map(k=><div key={k} style={{position:'absolute',top:`${10+Math.sin(k*1.9)*42}%`,left:`${8+Math.cos(k*2.3)*42}%`,fontSize:10+(k%3)*3,color:bcA,opacity:0.6,animation:`twinkle ${1.2+k*0.18}s ease-in-out infinite`,textShadow:`0 0 6px ${bcA}`}}>✦</div>)}
                 {/* 中心の大きな星 */}
@@ -3603,7 +3603,7 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
               </div>
             ):(
               /* 裏面 B（シンプル版に戻す: ✦ マーク1つ + キラ星） */
-              <div style={{position:'absolute',inset:0,borderRadius:14,background:`linear-gradient(135deg,${bcB}44 0%,#1a0533 50%,${bcB}33 100%)`,border:`3px solid ${bcB}`,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:`0 0 30px ${bcB}aa,inset 0 0 24px ${bcB}55`,overflow:'hidden',position:'relative'}}>
+              <div style={{position:'absolute',inset:0,borderRadius:14,background:`linear-gradient(135deg,${bcB}44 0%,#1a0533 50%,${bcB}33 100%)`,border:`3px solid ${bcB}`,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:`0 0 30px ${bcB}aa,inset 0 0 24px ${bcB}55`,overflow:'hidden'}}>
                 {[0,1,2,3,4,5,6,7].map(k=><div key={k} style={{position:'absolute',top:`${10+Math.sin(k*1.9)*42}%`,left:`${8+Math.cos(k*2.3)*42}%`,fontSize:10+(k%3)*3,color:bcB,opacity:0.6,animation:`twinkle ${1.2+k*0.18}s ease-in-out infinite`,textShadow:`0 0 6px ${bcB}`}}>✦</div>)}
                 <div style={{fontSize:80,color:bcB,opacity:0.85,animation:'pulse 1.4s ease-in-out infinite',textShadow:`0 0 18px ${bcB}`,zIndex:1}}>✦</div>
               </div>
