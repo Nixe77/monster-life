@@ -2300,10 +2300,8 @@ function QuestScreen({s,d}){
   const [auto,setAuto]=useState(true); // デフォルトON
   const battleSpeed=Math.max(1, s.settings?.battleSpeed||1); // 1x/2x/3x
   const sp=1/battleSpeed; // 時間倍率（速度2倍なら待ち時間1/2）
-  // オート周回（クエスト選択時に設定）
-  // loopMode: 'off'(単発) | '10'(10連) | '50'(50連) | 'inf'(無限)
-  const [loopMode,setLoopMode]=useState('off');
-  const [loopStats,setLoopStats]=useState(null); // 周回中の累計統計
+  // オート周回（戦闘中に手動でON）
+  const [loopStats,setLoopStats]=useState(null); // 周回中の累計統計（target=Infinityで稼働）
   const [subGauges,setSubGauges]=useState([0,0,0,0]);
   const [subFlash,setSubFlash]=useState([false,false,false,false]);
   const pm=s.monsters.find(m=>m.id===s.party.main)||s.monsters[0];
@@ -2407,11 +2405,6 @@ function QuestScreen({s,d}){
     setLog([`${pm.name}が${QUESTS[key].name}へ出発！`]);
     setSubGauges([0,0,0,0]);setSubFlash([false,false,false,false]);
     setPhase('quest');setCphase('ready');setDmg(null);
-    // オート周回が未開始の場合、loopMode設定に従って初期化
-    if(loopMode!=='off' && !loopStats?.target){
-      const target = loopMode==='inf' ? Infinity : parseInt(loopMode,10);
-      setLoopStats({runs:0,target,xpTotal:0,goldTotal:0,keysTotal:0,equipsTotal:0,lootTotal:{},startedKey:key});
-    }
     processNodeFn(key,0,hp,[]);
   }
 
@@ -2694,20 +2687,6 @@ function QuestScreen({s,d}){
       <div style={{fontSize:11,opacity:0.55,marginTop:2}}>冒険して素材を集め、お店で売ろう</div>
     </div>
 
-    {/* オート周回モード設定 */}
-    <div style={{...CARD,marginBottom:12,padding:'10px 12px',background:'linear-gradient(135deg,rgba(66,165,245,0.08),rgba(102,187,106,0.04))',border:`1px solid ${loopMode==='off'?'rgba(255,255,255,0.1)':'#42a5f566'}`}}>
-      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:7}}>
-        <div style={{fontSize:11,fontWeight:900,color:loopMode==='off'?'rgba(255,255,255,0.7)':'#42a5f5'}}>🔄 オート周回モード</div>
-        <div style={{fontSize:9,opacity:0.55}}>{loopMode==='off'?'通常プレイ':loopMode==='inf'?'∞ 停止まで永遠':loopMode+'回繰り返し'}</div>
-      </div>
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:4}}>
-        {[['off','OFF'],['10','10連'],['50','50連'],['inf','∞ 無限']].map(([k,l])=>(
-          <button key={k} onClick={()=>setLoopMode(k)} style={{...FF,padding:'7px 0',borderRadius:9,border:`1px solid ${loopMode===k?'#42a5f5':'rgba(255,255,255,0.12)'}`,background:loopMode===k?'rgba(66,165,245,0.22)':'rgba(255,255,255,0.04)',color:loopMode===k?'#42a5f5':'rgba(255,255,255,0.55)',cursor:'pointer',fontSize:10,fontWeight:900}}>{l}</button>
-        ))}
-      </div>
-      {loopMode!=='off'&&<div style={{fontSize:9,opacity:0.6,marginTop:6,lineHeight:1.5}}>クエスト開始後、{loopMode==='inf'?'停止ボタンを押すまで永遠に':'目標回数まで'}自動で周回します。戦闘不能・鍵不足で自動中断。</div>}
-    </div>
-
     <div style={{display:'flex',flexDirection:'column',gap:10}}>
       <div style={{display:'flex',gap:8,marginBottom:12}}>
         <button onClick={()=>setQuestTab('story')} style={{flex:1,padding:'10px',borderRadius:12,border:'none',cursor:'pointer',fontWeight:900,fontSize:13,background:questTab==='story'?'linear-gradient(135deg,#ff80ab,#ad1457)':'rgba(255,255,255,0.08)',color:'#fff'}}>📖 ストーリー</button>
@@ -2922,6 +2901,13 @@ function QuestScreen({s,d}){
           }} style={{...FF,padding:'3px 8px',borderRadius:12,border:`1px solid ${battleSpeed>1?'#42a5f5':'rgba(255,255,255,0.3)'}`,background:battleSpeed>1?'rgba(66,165,245,0.2)':'rgba(255,255,255,0.06)',cursor:'pointer',fontSize:10,fontWeight:700,color:battleSpeed>1?'#42a5f5':'rgba(255,255,255,0.6)'}}>
             ⏩ {battleSpeed}×
           </button>
+          {/* 周回ボタン: クリア済みクエスト & 周回未稼働時のみ表示 */}
+          {!!(s.clearedQuests||{})[qKey]&&!loopStats?.target&&<button onClick={()=>{
+            // 無限周回開始: loopStatsを初期化
+            setLoopStats({runs:0,target:Infinity,xpTotal:0,goldTotal:0,keysTotal:0,equipsTotal:0,lootTotal:{},startedKey:qKey});
+          }} style={{...FF,padding:'3px 10px',borderRadius:12,border:'1px solid rgba(66,165,245,0.4)',background:'rgba(66,165,245,0.08)',cursor:'pointer',fontSize:10,fontWeight:700,color:'#42a5f5'}}>
+            🔄 周回
+          </button>}
           <button onClick={()=>setAuto(a=>!a)} style={{...FF,padding:'3px 10px',borderRadius:12,border:`1px solid ${auto?'#ffd700':'rgba(255,255,255,0.3)'}`,background:auto?'rgba(255,215,0,0.2)':'rgba(255,255,255,0.06)',cursor:'pointer',fontSize:10,fontWeight:700,color:auto?'#ffd700':'rgba(255,255,255,0.6)'}}>
             {auto?'⚡ AUTO':'AUTO OFF'}
           </button>
