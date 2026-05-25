@@ -3222,12 +3222,9 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
   const nextIdxRef=useRef(0);
   const timerRef=useRef(null);
 
-  // 各カードの「現在表示する裏面レアリティ」を管理（昇格演出用）
-  // 通常は results[i].rarity と同じだが、昇格対象カードは初期段階で低レアから始まる
-  // promoteSeq[i] = ['C','R','SR','UR'] のような昇格手順配列（null=昇格なし）
-  // promoteStage[i] = 現在の表示段階（0始まり）
+  // promoteSeqRef.current[i] = カードiの昇格パス（null=昇格なし）
+  // 昇格対象カードはグリッド上では最初のレア（C=銀青）を裏面色に表示し、ズーム時に段階的に上がる
   const promoteSeqRef=useRef(null);
-  const [promoteStage,setPromoteStage]=useState(()=>results.map(()=>0));
 
   if(promoteSeqRef.current===null){
     // 初期化: SR以上のカードの60%を昇格対象に選定
@@ -3245,32 +3242,8 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
     promoteSeqRef.current=seq;
   }
 
-  // 昇格演出を進行: 該当カードのみ段階的にレア度を上げる
-  // めくる前のフェーズで色が上がっていく
-  useEffect(()=>{
-    if(zoomIdx!==null||done)return;
-    // 未めくりカードで昇格中のものを進める
-    const seq=promoteSeqRef.current;
-    let needTick=false;
-    seq.forEach((path,i)=>{
-      if(!path)return;
-      if(flipped[i])return;
-      if(promoteStage[i]<path.length-1)needTick=true;
-    });
-    if(!needTick)return;
-    const tid=setTimeout(()=>{
-      setPromoteStage(prev=>{
-        const a=[...prev];
-        seq.forEach((path,i)=>{
-          if(!path)return;
-          if(flipped[i])return;
-          if(a[i]<path.length-1)a[i]=a[i]+1;
-        });
-        return a;
-      });
-    },500);
-    return()=>clearTimeout(tid);
-  },[promoteStage,flipped,zoomIdx,done]);
+  // グリッド上の昇格演出は廃止（ズーム時に統合）
+  // 昇格対象カードはグリッド上では「銀青（低レア=ハズレ風）」のままで、ズーム時に段階的に色が上がる
 
   // 自動めくり
   useEffect(()=>{
@@ -3279,9 +3252,9 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
       const i=nextIdxRef.current;
       if(i>=results.length){setDone(true);return;}
       const r=results[i];
-      // モンスターガチャ＆（新規取得 or LR）→ ズームイン演出
-      // LRは取得済みでも特別演出を出す（既所持なら「取得済み」ピル表示）
-      if(kind==='monster'&&(r.isNew||r.rarity==='LR')){
+      // ズーム発動条件: 新規 OR LR OR 昇格対象（SR以上の60%）
+      const hasPromote=!!promoteSeqRef.current?.[i];
+      if(kind==='monster'&&(r.isNew||r.rarity==='LR'||hasPromote)){
         setZoomIdx(i);
         return;
       }
@@ -3292,17 +3265,49 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
     return()=>clearTimeout(timerRef.current);
   },[flipped,zoomIdx,done]);
 
-  // ズームイン演出: zoomIdxが立った瞬間にカードを裏のまま拡大、少し待ってめくる
+  // ズームイン演出: 多段階フリップ進行
+  // zoomStage: 現在の段階番号（0始まり）
+  // - 昇格パスがある場合: stage 0..(path.length-1)=各段階の裏面色、最終段階の次=表面
+  // - 昇格パスがない場合（通常の新規・LR）: stage 0=裏面、stage 1=表面
+  const [zoomStage,setZoomStage]=useState(0);
+  const [zoomRotation,setZoomRotation]=useState(0); // 累積回転角（中間=360°ずつ、最終=180°）
+  // zoomFlipped: 最終段階に到達して表面が見えた状態（タップで閉じる用）
   const [zoomFlipped,setZoomFlipped]=useState(false);
+
+  // zoomIdx変更時の初期化
   useEffect(()=>{
-    if(zoomIdx===null){setZoomFlipped(false);return;}
-    // 約700ms後にめくる（ズームインの間が完成してからフリップ）
-    const tid=setTimeout(()=>{
-      setFlipped(prev=>{const a=[...prev];a[zoomIdx]=true;return a;});
-      setZoomFlipped(true);
-    },700);
-    return()=>clearTimeout(tid);
+    if(zoomIdx===null){setZoomStage(0);setZoomRotation(0);setZoomFlipped(false);return;}
+    // ズーム開始: stage=0、rotation=0（裏面）
+    setZoomStage(0);
+    setZoomRotation(0);
+    setZoomFlipped(false);
   },[zoomIdx]);
+
+  // ズーム中の段階進行
+  useEffect(()=>{
+    if(zoomIdx===null)return;
+    if(zoomFlipped)return; // すでに完了
+    const r=results[zoomIdx];
+    const promoteSeq=promoteSeqRef.current?.[zoomIdx];
+    // 全体段階数: 昇格パスがあればpath.length（最終裏面まで）+1（表面）、なければ1（即表面）
+    const stageCount=promoteSeq?promoteSeq.length:1; // 中間段階の数
+    // 各段階の表示時間
+    const stageDelay=zoomStage===0?700:800; // 初回は短め（ズームイン直後）
+
+    const tid=setTimeout(()=>{
+      if(zoomStage<stageCount-1){
+        // 中間段階: 360°回転して次の裏面色へ
+        setZoomRotation(r2=>r2+360);
+        setZoomStage(s=>s+1);
+      }else{
+        // 最終段階: 180°回転して表面へ
+        setZoomRotation(r2=>r2+180);
+        setFlipped(prev=>{const a=[...prev];a[zoomIdx]=true;return a;});
+        setZoomFlipped(true);
+      }
+    },stageDelay);
+    return()=>clearTimeout(tid);
+  },[zoomIdx,zoomStage,zoomFlipped]);
 
   // 拡大演出のクローズ
   function closeZoom(){
@@ -3310,7 +3315,6 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
     if(!zoomFlipped)return; // めくる前は閉じれない
     nextIdxRef.current=zoomIdx+1;
     setZoomIdx(null);
-    setZoomFlipped(false);
   }
 
   // 全部一気にめくる（スキップ）
@@ -3329,31 +3333,34 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
   function renderZoomOverlay(){
     if(zoomIdx===null||kind!=='monster')return null;
     const r=results[zoomIdx];const mi=MONS[r.type];const col=RC[r.rarity]||'#fff';
+    const promoteSeq=promoteSeqRef.current?.[zoomIdx];
+    // 現在表示中の裏面レアリティ（zoomStageに連動）
+    const currentBackRar=promoteSeq?promoteSeq[Math.min(zoomStage,promoteSeq.length-1)]:r.rarity;
+    const bc=backColorOf(currentBackRar);
     // バナー文言を判定
-    // 1. 新規LR: 最高潮の演出（NEW LEGENDARY）
-    // 2. 既所持LR: LEGENDARY演出（取得済み）
-    // 3. 新規UR以下: NEW モンスター
     const isLR=r.rarity==='LR';
-    const bannerText=isLR ? (r.isNew?'✨ NEW LEGENDARY ✨':'🌟 LEGENDARY 🌟') : '✨ NEW モンスター ✨';
+    const bannerText=isLR ? (r.isNew?'✨ NEW LEGENDARY ✨':'🌟 LEGENDARY 🌟') : (r.isNew?'✨ NEW モンスター ✨':'⭐ レア排出 ⭐');
     const pillLabel=r.isNew?'NEW!':'取得済み';
     const pillColor=r.isNew?'#ff6b9d':'#6b8cae';
-    return <div onClick={closeZoom} style={{position:'fixed',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:14,cursor:zoomFlipped?'pointer':'default',background:`radial-gradient(circle at center, ${col}66 0%, rgba(10,2,25,0.97) 60%)`,backdropFilter:'blur(8px)',animation:'fadeIn 0.35s ease-out',zIndex:50,padding:14}}>
+    // 昇格中バナー（中間段階の表示）
+    const isMidStage=promoteSeq&&zoomStage<promoteSeq.length-1;
+    const promoBanner=isMidStage?(currentBackRar==='C'?'? 何が出る ?':currentBackRar==='SR'?'⭐ 昇格中... ⭐':'⭐⭐ さらに昇格! ⭐⭐'):null;
+    return <div onClick={closeZoom} style={{position:'fixed',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:14,cursor:zoomFlipped?'pointer':'default',background:`radial-gradient(circle at center, ${bc}55 0%, rgba(10,2,25,0.97) 60%)`,backdropFilter:'blur(8px)',animation:'fadeIn 0.35s ease-out',zIndex:50,padding:14,transition:'background 0.7s'}}>
       {/* 放射状の光（フリップ後のみ表示） */}
       {zoomFlipped&&<div style={{position:'absolute',inset:0,pointerEvents:'none',background:`conic-gradient(from 0deg, transparent 0deg, ${col}44 10deg, transparent 20deg, transparent 40deg, ${col}33 50deg, transparent 60deg, transparent 90deg, ${col}55 100deg, transparent 110deg, transparent 140deg, ${col}33 150deg, transparent 160deg, transparent 180deg, ${col}44 190deg, transparent 200deg, transparent 230deg, ${col}33 240deg, transparent 250deg, transparent 280deg, ${col}55 290deg, transparent 300deg, transparent 330deg, ${col}44 340deg, transparent 350deg)`,animation:'rotate 8s linear infinite',opacity:0.55}}/>}
-      {/* バナー（フリップ後に表示） */}
+      {/* バナー: 中間段階は昇格バナー、最終段階は本来のバナー */}
+      {promoBanner&&<div style={{fontSize:12,fontWeight:900,letterSpacing:2,color:bc,background:'rgba(0,0,0,0.55)',padding:'5px 16px',borderRadius:18,border:`2px solid ${bc}`,boxShadow:`0 0 18px ${bc}aa`,animation:'pulse 1s ease-in-out infinite',zIndex:2}}>{promoBanner}</div>}
       {zoomFlipped&&<div style={{fontSize:13,fontWeight:900,letterSpacing:3,color:col,background:'rgba(0,0,0,0.5)',padding:'6px 18px',borderRadius:20,border:`2px solid ${col}`,boxShadow:`0 0 24px ${col}aa`,animation:'glow 1.5s ease-in-out infinite',zIndex:2}}>{bannerText}</div>}
 
-      {/* 拡大カード（裏→表のフリップを内側で再現） */}
+      {/* 拡大カード（多段階フリップ） */}
       <div style={{width:260,maxWidth:'82vw',aspectRatio:'2/3',perspective:'1000px',position:'relative',animation:'zoomInCard 0.55s cubic-bezier(0.34,1.56,0.64,1)',zIndex:2}}>
-        <div style={{position:'absolute',inset:0,transformStyle:'preserve-3d',transition:'transform 0.7s cubic-bezier(0.34,1.56,0.64,1)',transform:zoomFlipped?'rotateY(180deg)':'rotateY(0deg)'}}>
-          {/* 裏面（拡大版・3段階の裏色） */}
-          {(()=>{const bc=backColorOf(r.rarity);return(
-          <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',borderRadius:14,background:`linear-gradient(135deg,${bc}44 0%,#1a0533 50%,${bc}33 100%)`,border:`3px solid ${bc}`,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:`0 0 30px ${bc}aa,inset 0 0 24px ${bc}55`}}>
-            <div style={{fontSize:80,color:bc,opacity:0.85,animation:'pulse 1.4s ease-in-out infinite',textShadow:`0 0 18px ${bc}`}}>✦</div>
-          </div>);})()}
+        <div style={{position:'absolute',inset:0,transformStyle:'preserve-3d',transition:'transform 0.7s cubic-bezier(0.34,1.56,0.64,1)',transform:`rotateY(${zoomRotation}deg)`}}>
+          {/* 裏面（拡大版・段階に応じた色） */}
+          <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',borderRadius:14,background:`linear-gradient(135deg,${bc}44 0%,#1a0533 50%,${bc}33 100%)`,border:`3px solid ${bc}`,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:`0 0 30px ${bc}aa,inset 0 0 24px ${bc}55`,transition:'all 0.5s ease'}}>
+            <div style={{fontSize:80,color:bc,opacity:0.85,animation:'pulse 1.4s ease-in-out infinite',textShadow:`0 0 18px ${bc}`,transition:'color 0.5s ease,text-shadow 0.5s ease'}}>✦</div>
+          </div>
           {/* 表面（拡大版） */}
           <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',transform:'rotateY(180deg)',borderRadius:14,padding:'28px 20px',background:`linear-gradient(135deg,${mi.bg}66,rgba(255,255,255,0.04))`,border:`3px solid ${col}`,boxShadow:`0 0 36px ${col}cc, inset 0 0 18px ${col}33`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:8,position:'relative',overflow:'hidden'}}>
-            {/* キラ星 */}
             {[0,1,2,3,4,5].map(i=><div key={i} style={{position:'absolute',top:`${15+Math.sin(i*1.7)*40}%`,left:`${10+Math.cos(i*2.1)*38}%`,fontSize:14,color:col,opacity:0.7,animation:`twinkle ${1.4+i*0.2}s ease-in-out infinite`}}>✦</div>)}
             <MonsterSprite type={r.type} size={110} anim="float"/>
             <div style={{fontSize:20,fontWeight:900,color:mi.color}}>{mi.name}</div>
@@ -3438,11 +3445,13 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
       {results.map((r,i)=>{
         const col=RC[r.rarity]||'#fff';
         const flippedI=flipped[i];
-        // 現在表示すべき裏面色: 昇格演出中なら段階に応じた色、それ以外は本来の色
-        const backRar=(promoteSeqRef.current?.[i]?.[promoteStage[i]])||r.rarity;
+        // 現在表示すべき裏面色: 昇格対象なら最初の段階色（C=銀青）、それ以外は本来の色
+        // ズームに入るまでは「ハズレ風」の銀青を見せて、ズーム時に段階的に上がる演出を引き立てる
+        const promoteSeq=promoteSeqRef.current?.[i];
+        const backRar=promoteSeq?promoteSeq[0]:r.rarity;
         const backCol=backColorOf(backRar);
-        // 昇格中のカードはやや派手なエフェクト
-        const isPromoting=promoteSeqRef.current?.[i]&&promoteStage[i]>0&&!flippedI;
+        // 昇格対象カードはグリッド上では脈動演出なし（ズーム時に派手にする）
+        const isPromoting=false;
         // ズーム対象は元位置で非表示にする
         const isZoomTarget=zoomIdx===i;
         return <div key={i} style={{aspectRatio:'2/3',perspective:'600px',position:'relative',opacity:isZoomTarget?0.15:1,transition:'opacity 0.4s'}}>
