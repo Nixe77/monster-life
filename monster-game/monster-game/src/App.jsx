@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v2.0.10"; // 図鑑をモンスタータブから独立画面化(メニュー専用アクセス)
+const APP_VERSION = "v2.1.0"; // フェーズ1完了: ガチャ天井+図鑑コンプ報酬+敵詳細段階アンロック+ハードモード
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -402,6 +402,12 @@ const FUSION_MONS={
 
 // ガチャプール（合成限定を除く）
 const POOL=Object.entries(MONS).filter(([k])=>!FUSION_MONS[k]).flatMap(([k,m])=>Array(RW[m.rarity]||1).fill(k));
+// ガチャ天井: 規定回数に達するとレア度確定排出
+const GACHA_PITY={
+  SR:50,  // 50連でSR以上確定
+  UR:100, // 100連でUR以上確定
+  LR:300, // 300連でLR確定
+};
 
 // 装備：ドロップ専用（購入不可）。レア度別ドロップ確率: C=8% R=4% SR=1.5% UR=0.5% LR=0.1%（ボス×3）
 const EQUIP_IMG_B64={
@@ -886,8 +892,11 @@ const DEFAULT_STATE={coins:400,diamonds:0,monsters:[{...mkMon('mofurun',1),name:
   playerLv:1,playerXp:0,keys:0,
   materials:{},equipInventory:_initialEquip(),
   gems:[], // 宝石インベントリ ({id,color,star})
-  dex:{monsters:['mofurun'],enemies:[],pendingDiamonds:0}, // 図鑑: 取得済みmonster type/撃退済みenemy type/未受取ダイヤ
+  dex:{monsters:['mofurun'],enemies:[],pendingDiamonds:0,claimedRewards:{monsters:[],enemies:[]},enemyDefeats:{}}, // 図鑑: 取得済みmonster type/撃退済みenemy type/未受取ダイヤ/コンプ報酬受取済み閾値/敵タイプ別撃退回数
   dexResetV1:true, // 図鑑リセット遡及処理(v2.0.9)完了フラグ - 新規プレイヤーはリセット済み扱い
+  giftBox:[], // プレゼントボックス（期限付き報酬リスト）
+  giftReleaseV1:true, // プレゼントBOXリリース記念配布完了フラグ - 新規プレイヤーは配布済み扱い
+  gachaPity:{sinceSR:0,sinceUR:0,sinceLR:0}, // ガチャ天井カウンタ（コインガチャ）
   shop:{listings:[],pendingGold:0},facilities:{},
   settings:{battleSpeed:1, animations:true, autoNextNode:true, confirmSell:true}, // 戦闘速度・アニメON/OFF等
   screen:'home',toast:null};
@@ -1037,13 +1046,49 @@ function migrateSave(p){
           monsters:monsList,
           enemies:[], // 敵は撃退記録がないため遡及不可、今後撃退で登録
           pendingDiamonds:pending+monsList.length*5, // 既存未受取 + 遡及分
+          claimedRewards:{monsters:[],enemies:[]},
+          enemyDefeats:{},
         };
       }
       // 通常運用: 既存dexを維持し、所持モンスターのうち未登録のものをマージ（ダイヤなし）
       mons.forEach(mm=>{if(MONS[mm.type]&&!existingM.includes(mm.type))existingM.push(mm.type);});
-      return{monsters:existingM,enemies:existingE,pendingDiamonds:pending};
+      const existingDefeats=p.dex?.enemyDefeats&&typeof p.dex.enemyDefeats==='object'?p.dex.enemyDefeats:{};
+      // 有効なENEMIESキーのみ保持
+      const cleanedDefeats={};
+      Object.entries(existingDefeats).forEach(([k,v])=>{if(ENEMIES[k]&&typeof v==='number'&&v>0)cleanedDefeats[k]=v;});
+      return{
+        monsters:existingM,enemies:existingE,pendingDiamonds:pending,
+        claimedRewards:{
+          monsters:Array.isArray(p.dex?.claimedRewards?.monsters)?p.dex.claimedRewards.monsters:[],
+          enemies:Array.isArray(p.dex?.claimedRewards?.enemies)?p.dex.claimedRewards.enemies:[],
+        },
+        enemyDefeats:cleanedDefeats,
+      };
     })(),
     dexResetV1:true, // 遡及処理完了フラグ（次回以降はスキップ）
+    // プレゼントボックス（期限付き、起動時に期限切れを自動削除）
+    giftBox:(()=>{
+      const arr=Array.isArray(p.giftBox)?p.giftBox:[];
+      const now=Date.now();
+      const filtered=arr.filter(g=>g&&g.id&&g.type&&(!g.expiresAt||g.expiresAt>now));
+      // v2.0.11 リリース記念ギフト配布（1回限り）
+      if(!p.giftReleaseV1){
+        filtered.unshift({
+          id:'gift_release_'+now.toString(36),type:'diamond',amount:30,
+          title:'プレゼントボックス機能リリース記念',
+          desc:'プレゼントボックス機能の追加を記念して、ダイヤ30個をプレゼント！',
+          from:'運営',createdAt:now,expiresAt:now+7*86400000, // 7日期限
+        });
+      }
+      return filtered;
+    })(),
+    giftReleaseV1:true,
+    // ガチャ天井カウンタ（旧セーブには存在しない → 0で初期化）
+    gachaPity:{
+      sinceSR:typeof p.gachaPity?.sinceSR==='number'?p.gachaPity.sinceSR:0,
+      sinceUR:typeof p.gachaPity?.sinceUR==='number'?p.gachaPity.sinceUR:0,
+      sinceLR:typeof p.gachaPity?.sinceLR==='number'?p.gachaPity.sinceLR:0,
+    },
     shop:{listings,pendingGold:p.shop?.pendingGold||0,autoList:!!p.shop?.autoList},
     facilities:p.facilities||{},
     playerLv:p.playerLv||1,
@@ -1121,6 +1166,64 @@ function mkGem(){
   const color=GEM_COLORS[Math.floor(Math.random()*GEM_COLORS.length)];
   return {id:'g_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),color,star:1};
 }
+// ─── プレゼントボックス ヘルパー ──────────────────────────
+const GIFT_ICON={diamond:'💎',coin:'💰',key:'🗝',material:'🎒',gem:'💠'};
+const GIFT_TYPE_LABEL={diamond:'ダイヤ',coin:'コイン',key:'修行の鍵',material:'素材',gem:'宝石'};
+function mkGift({type,amount,payload,title,desc,from,expiresInDays}){
+  const now=Date.now();
+  return{
+    id:'gift_'+now.toString(36)+Math.random().toString(36).slice(2,6),
+    type,amount:amount||1,
+    payload:payload||null,
+    title:title||GIFT_TYPE_LABEL[type]||'プレゼント',
+    desc:desc||'',
+    from:from||'システム',
+    createdAt:now,
+    expiresAt:expiresInDays?now+expiresInDays*86400000:null,
+  };
+}
+function applyGiftReward(s,g){
+  // ギフトを受け取って state に報酬を加算したものを返す（reducer内から呼ぶ）
+  switch(g.type){
+    case 'diamond':return{...s,diamonds:(s.diamonds||0)+(g.amount||0)};
+    case 'coin':return{...s,coins:(s.coins||0)+(g.amount||0)};
+    case 'key':return{...s,keys:(s.keys||0)+(g.amount||0)};
+    case 'material':{
+      const k=g.payload?.key;if(!k||!ITEMS[k])return s;
+      return{...s,materials:{...s.materials,[k]:(s.materials[k]||0)+(g.amount||1)}};
+    }
+    case 'gem':{
+      const color=g.payload?.color,star=g.payload?.star;
+      if(!GEM_COLORS.includes(color)||!star||star<1||star>10)return s;
+      const newGem={id:'g_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),color,star};
+      return{...s,gems:[...(s.gems||[]),newGem]};
+    }
+    default:return s;
+  }
+}
+// ─── 図鑑コンプ報酬テーブル ────────────────────────────
+// 閾値: パーセント(10/30/50/100) → 報酬リスト
+const DEX_COMP_REWARDS={
+  monsters:{
+    10: [{type:'coin',amount:5000,desc:'コイン×5000'}],
+    30: [{type:'diamond',amount:30,desc:'ダイヤ×30'}],
+    50: [{type:'diamond',amount:60,desc:'ダイヤ×60'},{type:'key',amount:5,desc:'修行の鍵×5'}],
+    100:[{type:'diamond',amount:200,desc:'ダイヤ×200'}],
+  },
+  enemies:{
+    10: [{type:'coin',amount:5000,desc:'コイン×5000'}],
+    30: [{type:'key',amount:5,desc:'修行の鍵×5'}],
+    50: [{type:'diamond',amount:60,desc:'ダイヤ×60'}],
+    100:[{type:'diamond',amount:200,desc:'ダイヤ×200'}],
+  },
+};
+const DEX_COMP_THRESHOLDS=[10,30,50,100];
+function dexProgress(s,kind){
+  // kind: 'monsters' | 'enemies'
+  const total=kind==='monsters'?Object.keys(MONS).length:Object.keys(ENEMIES).length;
+  const known=(s.dex?.[kind]||[]).length;
+  return{known,total,pct:total?known/total*100:0};
+}
 function facLvCost(facKey, curLv){
   // 建設: base / Lv上げ: base * (curLv+1)^1.6
   const f=FACILITIES[facKey]; if(!f) return 99999;
@@ -1173,24 +1276,30 @@ function reducer(s,a){
     case 'SCREEN':return{...s,screen:a.v};
     case 'TOAST_CLEAR':return{...s,toast:null};
     case 'QUEST_COMPLETE':{
+      const isHard=!!a.hardMode;
+      // ハードモードはコインと素材を2倍化
       const mat={...s.materials};
-      a.loot.forEach(k=>{mat[k]=(mat[k]||0)+1});
-      // メインに100% + サブ全員に30%ずつXPを配分
-      const subXp=Math.floor(a.xp*0.30);
+      a.loot.forEach(k=>{mat[k]=(mat[k]||0)+(isHard?2:1)});
+      // メインに100% + サブ全員に30%ずつXPを配分（ハードは2倍）
+      const xpGain=Math.ceil((a.xp||0)*(isHard?2:1));
+      const subXp=Math.floor(xpGain*0.30);
       const subIds=new Set((s.party.subs||[]).filter(Boolean));
       const mons=s.monsters.map(m=>{
-        if(m.id===s.party.main)return addXP(m,a.xp);
+        if(m.id===s.party.main)return addXP(m,xpGain);
         if(subIds.has(m.id))return addXP(m,subXp);
         return m;
       });
-      const pxp=Math.ceil(a.xp*0.6+(a.loot.length*8));
-      const goldGain=a.gold||0;
+      const pxp=Math.ceil(xpGain*0.6+(a.loot.length*8));
+      const goldGain=Math.ceil((a.gold||0)*(isHard?2:1));
       const keyGain=a.keyDrops||0;
       const eqDrops=Array.isArray(a.equipDrops)?a.equipDrops.filter(eq=>eq&&eq.key&&EQUIP[eq.key]):[];
-      const cleared={...s.clearedQuests,[a.questKey]:true};
+      // ハードクリアは別キーで記録（_hardサフィックス）
+      const recordKey=isHard?`${a.questKey}_hard`:a.questKey;
+      const cleared={...s.clearedQuests,[recordKey]:true};
       const lootMsg=a.loot.map(k=>ITEMS[k]?.name).filter(Boolean).join('・');
       const eqMsg=eqDrops.length?` 装備×${eqDrops.length}！`:'';
       const subMsg=subIds.size>0?` サブ${subIds.size}体に+${subXp}XP`:'';
+      const hardMsg=isHard?'🔥 ハードクリア！ ':'';
       // 自動出品: 雑貨商Lv2以上＆autoList=ON時、新規入手アイテムのうち basePrice>0 を自動出品リストに追加
       let newListings=s.shop.listings;
       let autoListMsg='';
@@ -1215,16 +1324,24 @@ function reducer(s,a){
           autoListMsg=' 🏪 自動出品';
         }
       }
-      const toast=`クエスト完了！ ${lootMsg}${goldGain?` +${goldGain}🪙`:''}${keyGain?` 🗝×${keyGain}`:''}${eqMsg}${subMsg}${autoListMsg}`;
+      const toast=`${hardMsg}クエスト完了！ ${lootMsg}${goldGain?` +${goldGain}🪙`:''}${keyGain?` 🗝×${keyGain}`:''}${eqMsg}${subMsg}${autoListMsg}`;
       // 図鑑更新: 撃退した敵タイプを登録 (a.defeatedEnemies = enemyType の配列)
       const defeatedEnemies=Array.isArray(a.defeatedEnemies)?a.defeatedEnemies.filter(t=>ENEMIES[t]):[];
       const enemyDexSet=new Set(s.dex?.enemies||[]);
       const newEnemyDex=defeatedEnemies.filter(t=>!enemyDexSet.has(t));
       const dexDiamondGain=newEnemyDex.length*5;
+      // 撃退カウンタ加算（敵詳細情報のアンロック用）
+      const incomingKills=a.enemyKills&&typeof a.enemyKills==='object'?a.enemyKills:{};
+      const baseDefeats={...(s.dex?.enemyDefeats||{})};
+      Object.entries(incomingKills).forEach(([k,v])=>{
+        if(ENEMIES[k]&&typeof v==='number'&&v>0)baseDefeats[k]=(baseDefeats[k]||0)+v;
+      });
       const dex={
+        ...(s.dex||{}),
         monsters:s.dex?.monsters||[],
         enemies:[...(s.dex?.enemies||[]),...newEnemyDex],
         pendingDiamonds:(s.dex?.pendingDiamonds||0)+dexDiamondGain,
+        enemyDefeats:baseDefeats,
       };
       const finalToast=dexDiamondGain>0?`${toast} 📖+${newEnemyDex.length}`:toast;
       const base={...s,materials:mat,monsters:mons,coins:s.coins+goldGain,keys:(s.keys||0)+keyGain,equipInventory:[...s.equipInventory,...eqDrops],clearedQuests:cleared,shop:{...s.shop,listings:newListings},dex,toast:finalToast};
@@ -1558,40 +1675,69 @@ function reducer(s,a){
     }
     case 'GACHA':{
       const cost=a.n===10?900:100;if(s.coins<cost)return{...s,toast:'コインが足りない！'};
-      const pulled=Array.from({length:a.n},()=>POOL[Math.floor(Math.random()*POOL.length)]);
+      // レアリティ別プール（天井時の確定抽選用）
+      const poolByRarity={C:[],R:[],SR:[],UR:[],LR:[]};
+      Object.entries(MONS).forEach(([k,m])=>{if(!FUSION_MONS[k])poolByRarity[m.rarity].push(k);});
+      let pity={...(s.gachaPity||{sinceSR:0,sinceUR:0,sinceLR:0})};
+      const pulled=[];
+      const guaranteedFlags=[]; // 天井による確定排出かどうか（演出フラグ）
+      for(let i=0;i<a.n;i++){
+        pity.sinceSR++;pity.sinceUR++;pity.sinceLR++;
+        let type,guaranteed=null;
+        if(pity.sinceLR>=GACHA_PITY.LR){
+          // LR天井: LRから抽選
+          const pool=poolByRarity.LR;
+          type=pool[Math.floor(Math.random()*pool.length)]||POOL[0];
+          guaranteed='LR';
+        }else if(pity.sinceUR>=GACHA_PITY.UR){
+          // UR天井: UR以上から抽選
+          const pool=[...poolByRarity.UR,...poolByRarity.LR];
+          type=pool[Math.floor(Math.random()*pool.length)]||POOL[0];
+          guaranteed='UR';
+        }else if(pity.sinceSR>=GACHA_PITY.SR){
+          // SR天井: SR以上から抽選
+          const pool=[...poolByRarity.SR,...poolByRarity.UR,...poolByRarity.LR];
+          type=pool[Math.floor(Math.random()*pool.length)]||POOL[0];
+          guaranteed='SR';
+        }else{
+          // 通常POOL抽選
+          type=POOL[Math.floor(Math.random()*POOL.length)];
+        }
+        pulled.push(type);guaranteedFlags.push(guaranteed);
+        // 排出レアでカウンタリセット
+        const r=MONS[type].rarity;
+        if(r==='LR'){pity.sinceLR=0;pity.sinceUR=0;pity.sinceSR=0;}
+        else if(r==='UR'){pity.sinceUR=0;pity.sinceSR=0;}
+        else if(r==='SR'){pity.sinceSR=0;}
+      }
       let mons=[...s.monsters];const results=[];
-      // ガチャ内重複判定用（同ガチャ内で同種2体目以降はlb合成）
       const ownedTypesBefore=new Set(s.monsters.map(m=>m.type));
-      // 図鑑判定用：dexにあれば既出（NEW判定の本来の指標）
       const dexSet=new Set(s.dex?.monsters||[]);
-      const newDexTypes=[]; // 今回のガチャで新規追加するtype
-      for(const type of pulled){
-        const isNewType=!dexSet.has(type); // dex基準のNEW判定
+      const newDexTypes=[];
+      pulled.forEach((type,i)=>{
+        const isNewType=!dexSet.has(type);
         if(isNewType){dexSet.add(type);newDexTypes.push(type);}
-        // ガチャ演出用のレアリティは「プール抽選時の純粋なレア」で固定（ランクアップ後の値を使わない）
         const pureRarity=MONS[type].rarity;
         const dup=mons.find(m=>m.type===type&&m.lb<5);
         if(dup){
           const nlb=Math.min(5,dup.lb+1);
           const nr=(nlb===3||nlb===5)&&RO.indexOf(dup.rarity)<4?RO[RO.indexOf(dup.rarity)+1]:dup.rarity;
           mons=mons.map(m=>m.id===dup.id?{...m,lb:nlb,rarity:nr}:m);
-          // results.rarity = pureRarity (ガチャ画面表示用)、isLB情報は保持するが演出では使わない
-          results.push({type,isLB:true,rarity:pureRarity,lb:nlb,isNew:false});
+          results.push({type,isLB:true,rarity:pureRarity,lb:nlb,isNew:false,guaranteed:guaranteedFlags[i]});
         }else{
           const nm={...mkMon(type,Date.now()+Math.random()*9999)};
           mons.push(nm);
-          ownedTypesBefore.add(type); // 同じ抽選内で2体目以降は既所持扱い
-          results.push({type,isLB:false,rarity:pureRarity,lb:0,isNew:isNewType});
+          ownedTypesBefore.add(type);
+          results.push({type,isLB:false,rarity:pureRarity,lb:0,isNew:isNewType,guaranteed:guaranteedFlags[i]});
         }
-      }
-      // 図鑑更新＋ダイヤ報酬は受取待ち（pendingDiamonds）に積む（初取得タイプ1つにつき+5）
+      });
       const diamondGain=newDexTypes.length*5;
       const dex={
         monsters:[...(s.dex?.monsters||[]),...newDexTypes],
         enemies:s.dex?.enemies||[],
         pendingDiamonds:(s.dex?.pendingDiamonds||0)+diamondGain,
       };
-      return{...s,coins:s.coins-cost,monsters:mons,dex,gacha:{results,idx:0}};
+      return{...s,coins:s.coins-cost,monsters:mons,dex,gachaPity:pity,gacha:{results,idx:0}};
     }
     case 'GACHA_NEXT':{if(!s.gacha)return s;const ni=s.gacha.idx+1;if(ni>=s.gacha.results.length)return{...s,gacha:null};return{...s,gacha:{...s.gacha,idx:ni}};}
     case 'GACHA_DONE':return{...s,gacha:null};
@@ -1600,6 +1746,58 @@ function reducer(s,a){
       const pending=s.dex?.pendingDiamonds||0;
       if(pending<=0)return{...s,toast:'受け取れるダイヤがありません'};
       return{...s,diamonds:(s.diamonds||0)+pending,dex:{...s.dex,pendingDiamonds:0},toast:`💎+${pending} 受け取った！`};
+    }
+    case 'CLAIM_DEX_COMP_REWARD':{
+      // 図鑑コンプ報酬: kind('monsters'|'enemies'), threshold(10/30/50/100)
+      const {kind,threshold}=a;
+      if(!['monsters','enemies'].includes(kind))return s;
+      if(!DEX_COMP_THRESHOLDS.includes(threshold))return s;
+      const prog=dexProgress(s,kind);
+      if(prog.pct<threshold)return{...s,toast:`達成率が ${threshold}% に達していません`};
+      const claimed=s.dex?.claimedRewards?.[kind]||[];
+      if(claimed.includes(threshold))return{...s,toast:'すでに受け取り済みです'};
+      // 報酬を順次適用
+      const rewards=DEX_COMP_REWARDS[kind][threshold]||[];
+      let ns=s;
+      rewards.forEach(r=>{ns=applyGiftReward(ns,r);});
+      const newClaimed=[...claimed,threshold];
+      const dex={
+        ...s.dex,
+        claimedRewards:{
+          ...(s.dex?.claimedRewards||{monsters:[],enemies:[]}),
+          [kind]:newClaimed,
+        },
+      };
+      const label=kind==='monsters'?'味方':'敵';
+      const descs=rewards.map(r=>r.desc).join(' / ');
+      return{...ns,dex,toast:`🏆 ${label}図鑑 ${threshold}% 達成！ ${descs}`};
+    }
+    case 'ADD_GIFT':{
+      // プレゼント追加（システム配布、ログインボーナス等）
+      const g=a.gift;if(!g||!g.id||!g.type)return s;
+      return{...s,giftBox:[g,...(s.giftBox||[])]};
+    }
+    case 'CLAIM_GIFT':{
+      // 個別受取
+      const g=(s.giftBox||[]).find(x=>x.id===a.id);
+      if(!g)return{...s,toast:'プレゼントが見つかりません'};
+      if(g.expiresAt&&g.expiresAt<Date.now())return{...s,toast:'⌛ 期限切れです',giftBox:s.giftBox.filter(x=>x.id!==a.id)};
+      const ns=applyGiftReward(s,g);
+      return{...ns,giftBox:ns.giftBox.filter(x=>x.id!==a.id),toast:`${GIFT_ICON[g.type]||'🎁'} ${g.title} を受け取った！`};
+    }
+    case 'CLAIM_ALL_GIFTS':{
+      // 期限内すべて受取
+      const now=Date.now();
+      const list=(s.giftBox||[]).filter(g=>!g.expiresAt||g.expiresAt>now);
+      if(list.length===0)return{...s,toast:'受け取れるプレゼントがありません'};
+      let ns=s;
+      list.forEach(g=>{ns=applyGiftReward(ns,g);});
+      return{...ns,giftBox:(s.giftBox||[]).filter(g=>g.expiresAt&&g.expiresAt<=now),toast:`🎁 ${list.length}件 受け取った！`};
+    }
+    case 'PURGE_EXPIRED_GIFTS':{
+      // 期限切れ削除
+      const now=Date.now();
+      return{...s,giftBox:(s.giftBox||[]).filter(g=>!g.expiresAt||g.expiresAt>now)};
     }
     case 'MATERIAL_GACHA':{
       // 素材ガチャ: n=1(単発) or n=10(10連、約10%割引)
@@ -2583,11 +2781,23 @@ function QuestScreen({s,d}){
       // ボス本体は1体目、サポートは同じenemyKeyかランダム選択
       const isBossOne = isBoss && i===0;
       const sc = getScaledEnemy(node.e, chap, isBossOne, node.mul);
-      arr.push({
+      // ハードモード: 敵ステータス×2 (HP/ATK/DEF/SPD/LUK/XP/Gold)
+      const hard=R.current.hardMode;
+      const scaled=hard?{
         ...sc,
+        hp:Math.ceil(sc.hp*2),
+        atk:Math.ceil(sc.atk*2),
+        def:Math.ceil((sc.def||0)*2),
+        spd:Math.ceil((sc.spd||0)*2),
+        luk:Math.ceil((sc.luk||0)*2),
+        xp:Math.ceil((sc.xp||0)*2),
+        gold:Math.ceil((sc.gold||0)*2),
+      }:sc;
+      arr.push({
+        ...scaled,
         key:node.e,
         alive:true,
-        maxHp:sc.hp,
+        maxHp:scaled.hp,
       });
     }
     return arr;
@@ -2615,7 +2825,7 @@ function QuestScreen({s,d}){
     const targetReached=newStats.target!==Infinity && newStats.runs>=newStats.target;
     if(targetReached){
       // 目標達成 → 停止
-      d({type:'QUEST_COMPLETE',loot:R.current.loot,xp:R.current.xp,gold:R.current.gold||0,keyDrops:R.current.keyDrops||0,equipDrops:R.current.equipDrops||[],defeatedEnemies:R.current.defeatedTypes||[],questKey:qKey});
+      d({type:'QUEST_COMPLETE',loot:R.current.loot,xp:R.current.xp,gold:R.current.gold||0,keyDrops:R.current.keyDrops||0,equipDrops:R.current.equipDrops||[],defeatedEnemies:R.current.defeatedTypes||[],enemyKills:R.current.enemyKills||{},hardMode:!!R.current.hardMode,questKey:qKey});
       setLoopStats({...newStats,target:null,stoppedReason:'目標達成'});
       return;
     }
@@ -2624,7 +2834,7 @@ function QuestScreen({s,d}){
       const cost=cq.keyCost||1;
       if((s.keys||0)<cost){
         // 鍵不足で停止
-        d({type:'QUEST_COMPLETE',loot:R.current.loot,xp:R.current.xp,gold:R.current.gold||0,keyDrops:R.current.keyDrops||0,equipDrops:R.current.equipDrops||[],defeatedEnemies:R.current.defeatedTypes||[],questKey:qKey});
+        d({type:'QUEST_COMPLETE',loot:R.current.loot,xp:R.current.xp,gold:R.current.gold||0,keyDrops:R.current.keyDrops||0,equipDrops:R.current.equipDrops||[],defeatedEnemies:R.current.defeatedTypes||[],enemyKills:R.current.enemyKills||{},hardMode:!!R.current.hardMode,questKey:qKey});
         setLoopStats({...newStats,target:null,stoppedReason:'鍵不足'});
         return;
       }
@@ -2632,7 +2842,7 @@ function QuestScreen({s,d}){
     }
     // 次の周回へ
     const tid=setTimeout(()=>{
-      d({type:'QUEST_COMPLETE',loot:R.current.loot,xp:R.current.xp,gold:R.current.gold||0,keyDrops:R.current.keyDrops||0,equipDrops:R.current.equipDrops||[],defeatedEnemies:R.current.defeatedTypes||[],questKey:qKey});
+      d({type:'QUEST_COMPLETE',loot:R.current.loot,xp:R.current.xp,gold:R.current.gold||0,keyDrops:R.current.keyDrops||0,equipDrops:R.current.equipDrops||[],defeatedEnemies:R.current.defeatedTypes||[],enemyKills:R.current.enemyKills||{},hardMode:!!R.current.hardMode,questKey:qKey});
       setLoopStats(newStats);
       startQuest(qKey);
     }, 600);
@@ -2646,14 +2856,14 @@ function QuestScreen({s,d}){
     }
   },[phase]);
 
-  function startQuest(key,resetHp=true){
+  function startQuest(key,resetHp=true,hardMode=false){
     if(!pm||!stats)return;
     const maxHp=stats.maxHp;
     const hp=resetHp?maxHp:Math.max(1,R.current.monHp);
-    R.current={monHp:hp,enemies:[],activeIdx:0,loot:[],xp:0,keyDrops:0,equipDrops:[],defeatedTypes:[],qKey:key,nodeIdx:0,cphase:'ready',phase:'quest',
+    R.current={monHp:hp,enemies:[],activeIdx:0,loot:[],xp:0,keyDrops:0,equipDrops:[],defeatedTypes:[],enemyKills:{},qKey:key,hardMode:!!hardMode,nodeIdx:0,cphase:'ready',phase:'quest',
                buffAtk:1,buffDef:1,buffLuk:0,gauges:[0,0,0,0]};
     setQKey(key);setNodeIdx(0);setMonHp(hp);setEnemies([]);setActiveEnemyIdx(0);setLoot([]);
-    setLog([`${pm.name}が${QUESTS[key].name}へ出発！`]);
+    setLog([`${pm.name}が${QUESTS[key].name}${hardMode?'(ハード)':''}へ出発！`]);
     setSubGauges([0,0,0,0]);setSubFlash([false,false,false,false]);
     setPhase('quest');setCphase('ready');setDmg(null);
     processNodeFn(key,0,hp,[]);
@@ -2817,6 +3027,8 @@ function QuestScreen({s,d}){
       totalXp+=e.xp||0;totalGold+=e.gold||0;
       // 撃退した敵タイプを図鑑記録用に蓄積（重複は許容、QUEST_COMPLETE側でユニーク処理）
       if(e.type&&!R.current.defeatedTypes.includes(e.type))R.current.defeatedTypes.push(e.type);
+      // 撃退回数カウンタ（敵詳細情報のアンロック用）
+      if(e.type){R.current.enemyKills[e.type]=(R.current.enemyKills[e.type]||0)+1;}
     });
     // 出品ボーナス: 雑貨商を持ち、出品中の異なるアイテム種類数に応じて成長素材ドロップ率UP
     // 出品種類×3%（最大+30%）、雑貨商Lvでさらに上限UP
@@ -2847,12 +3059,13 @@ function QuestScreen({s,d}){
     }
     // 通常戦闘でもごく低確率で スキル石 ドロップ（出品ボーナスで増加: 0.06 → 最大0.16+）
     if(node.t==='enemy'&&Math.random()<0.06+listBonus*0.33){drops.push('skill_stone');}
-    // 装備ドロップ
+    // 装備ドロップ（ハードモードは装備ドロップ率×1.5）
     const dropTable=node.t==='boss'?EQUIP_DROP_BOSS:EQUIP_DROP_NORMAL;
     const newEquips=[];
     const questChap=q?.chapter||1;
+    const dropMul=R.current.hardMode?1.5:1;
     for(const rar of ['LR','UR','SR','R','C']){
-      if(Math.random()<dropTable[rar]){
+      if(Math.random()<dropTable[rar]*dropMul){
         const drop=genEquipDrop(questChap, rar);
         if(drop){newEquips.push(drop);break;}
       }
@@ -2999,26 +3212,29 @@ function QuestScreen({s,d}){
               {expanded&&<div style={{padding:'4px 8px 10px',display:'flex',flexDirection:'column',gap:6}}>
                 {quests.filter(([k,q])=>stageVisible(chNum,q.stage)).map(([key,q])=>{
                   const isClear=!!cleared[key];
+                  const isHardClear=!!cleared[key+'_hard'];
                   const isNext=isNextStage(chNum,q.stage); // 次の挑戦先（黄色ハイライト）
-                  return <button key={key} onClick={()=>startQuest(key)}
-                    style={{...CARD,...FF,display:'flex',gap:10,alignItems:'center',cursor:'pointer',padding:'10px 12px',
-                      border:`1px solid ${isNext?'#ffd700aa':q.rankCol+'66'}`,
-                      background:isClear?'rgba(255,255,255,0.04)':q.bg,
-                      animation:isNext?'pulse 2.5s ease-in-out infinite':undefined,
-                      boxShadow:isNext?'0 0 12px rgba(255,215,0,0.18)':undefined}}>
-                    <div style={{minWidth:34,textAlign:'center'}}>
-                      <div style={{fontSize:10,fontWeight:900,color:isClear?'#66bb6a':isNext?'#ffd700':'#ffd700'}}>{isClear?'✓':q.isBoss?'👑':'⚔'}</div>
-                      <div style={{fontSize:14,fontWeight:900,marginTop:2}}>{q.stage}</div>
-                    </div>
-                    <div style={{flex:1,textAlign:'left'}}>
-                      <div style={{fontWeight:900,fontSize:13,color:isNext?'#ffd700':undefined}}>{q.name}{q.isBoss&&<span style={{marginLeft:5,fontSize:9,color:'#ff5722'}}>BOSS</span>}{isNext&&<span style={{marginLeft:6,fontSize:8,color:'#ffd700',background:'rgba(255,215,0,0.15)',padding:'1px 5px',borderRadius:6}}>NEW</span>}</div>
-                      <div style={{fontSize:10,opacity:0.6,marginTop:2}}>
-                        {q.nodes.filter(n=>n.t==='enemy'||n.t==='boss').map(n=>ENEMIES[n.e]?.icon).join(' ')}
-                        {q.nodes.some(n=>n.t==='chest')&&<span style={{marginLeft:6,fontSize:11}}>📦</span>}
+                  const hardUnlocked=chapClear; // 章クリア後にハードモード解放
+                  return <div key={key} style={{...CARD,padding:'10px 12px',border:`1px solid ${isNext?'#ffd700aa':q.rankCol+'66'}`,background:isClear?'rgba(255,255,255,0.04)':q.bg,animation:isNext?'pulse 2.5s ease-in-out infinite':undefined,boxShadow:isNext?'0 0 12px rgba(255,215,0,0.18)':undefined}}>
+                    <div style={{display:'flex',gap:10,alignItems:'center'}}>
+                      <div style={{minWidth:34,textAlign:'center'}}>
+                        <div style={{fontSize:10,fontWeight:900,color:isClear?'#66bb6a':isNext?'#ffd700':'#ffd700'}}>{isClear?'✓':q.isBoss?'👑':'⚔'}</div>
+                        <div style={{fontSize:14,fontWeight:900,marginTop:2}}>{q.stage}</div>
+                      </div>
+                      <div style={{flex:1,textAlign:'left'}}>
+                        <div style={{fontWeight:900,fontSize:13,color:isNext?'#ffd700':undefined}}>{q.name}{q.isBoss&&<span style={{marginLeft:5,fontSize:9,color:'#ff5722'}}>BOSS</span>}{isNext&&<span style={{marginLeft:6,fontSize:8,color:'#ffd700',background:'rgba(255,215,0,0.15)',padding:'1px 5px',borderRadius:6}}>NEW</span>}{isHardClear&&<span style={{marginLeft:5,fontSize:8,color:'#ff5722',background:'rgba(255,87,34,0.15)',padding:'1px 5px',borderRadius:6}}>🔥H</span>}</div>
+                        <div style={{fontSize:10,opacity:0.6,marginTop:2}}>
+                          {q.nodes.filter(n=>n.t==='enemy'||n.t==='boss').map(n=>ENEMIES[n.e]?.icon).join(' ')}
+                          {q.nodes.some(n=>n.t==='chest')&&<span style={{marginLeft:6,fontSize:11}}>📦</span>}
+                        </div>
                       </div>
                     </div>
-                    <div style={{fontSize:16,opacity:0.7,color:isNext?'#ffd700':undefined}}>▶</div>
-                  </button>;
+                    <div style={{display:'grid',gridTemplateColumns:hardUnlocked?'1fr 1fr':'1fr',gap:5,marginTop:8}}>
+                      <button onClick={()=>startQuest(key,true,false)} style={{...FF,padding:'7px 0',borderRadius:8,border:'none',cursor:'pointer',background:'linear-gradient(135deg,#bf88ff,#7c3aed)',color:'#fff',fontSize:11,fontWeight:900}}>▶ 通常</button>
+                      {hardUnlocked&&<button onClick={()=>startQuest(key,true,true)} style={{...FF,padding:'7px 0',borderRadius:8,border:'none',cursor:'pointer',background:'linear-gradient(135deg,#ff5722,#d32f2f)',color:'#fff',fontSize:11,fontWeight:900}}>🔥 ハード</button>}
+                    </div>
+                    {hardUnlocked&&<div style={{fontSize:8,opacity:0.55,marginTop:5,textAlign:'center'}}>ハード: 敵2倍 / 報酬2倍 / 装備ドロップ率1.5倍</div>}
+                  </div>;
                 })}
               </div>}
             </div>;
@@ -3113,7 +3329,7 @@ function QuestScreen({s,d}){
         // 修行: 同じ難易度をもう一度（鍵があれば）
         const wasCleared=!!(s.clearedQuests||{})[qKey]; // 今回より前にクリア済みだったか
         const commitAndGo=(targetKey)=>{
-          d({type:'QUEST_COMPLETE',loot:R.current.loot,xp:R.current.xp,gold:R.current.gold||0,keyDrops:R.current.keyDrops||0,equipDrops:R.current.equipDrops||[],defeatedEnemies:R.current.defeatedTypes||[],questKey:qKey});
+          d({type:'QUEST_COMPLETE',loot:R.current.loot,xp:R.current.xp,gold:R.current.gold||0,keyDrops:R.current.keyDrops||0,equipDrops:R.current.equipDrops||[],defeatedEnemies:R.current.defeatedTypes||[],enemyKills:R.current.enemyKills||{},hardMode:!!R.current.hardMode,questKey:qKey});
           if(targetKey===qKey&&cq?.kind==='training'){
             // 修行もう一度: 鍵を消費
             const cost=cq.keyCost||1;
@@ -3684,6 +3900,75 @@ function GemTab({s,d}){
   </div>;
 }
 
+// ─── GIFT BOX (プレゼントボックス) ─────────────────────────
+function GiftBoxPanel({s,d}){
+  const gifts=s.giftBox||[];
+  const now=Date.now();
+  const valid=gifts.filter(g=>!g.expiresAt||g.expiresAt>now);
+  const expired=gifts.filter(g=>g.expiresAt&&g.expiresAt<=now);
+  function fmtTimeLeft(expiresAt){
+    if(!expiresAt)return '無期限';
+    const ms=expiresAt-now;
+    if(ms<=0)return '期限切れ';
+    const days=Math.floor(ms/86400000);
+    const hours=Math.floor((ms%86400000)/3600000);
+    if(days>0)return `あと${days}日`;
+    if(hours>0)return `あと${hours}時間`;
+    const mins=Math.floor(ms/60000);
+    return `あと${mins}分`;
+  }
+  function giftDetailText(g){
+    if(g.type==='material'&&g.payload?.key){const it=ITEMS[g.payload.key];return it?`${it.icon||''} ${it.name}×${g.amount}`:`${g.amount}個`;}
+    if(g.type==='gem'&&g.payload){return `${GEM_COLOR_NAME[g.payload.color]||''} ★${g.payload.star}`;}
+    return `×${g.amount}`;
+  }
+
+  return <div>
+    {/* 説明カード */}
+    <div style={{...CARD,marginBottom:10,padding:'10px 12px',background:'linear-gradient(135deg,rgba(255,159,207,0.08),rgba(191,136,255,0.08))',border:'1px solid rgba(255,159,207,0.3)'}}>
+      <div style={{fontSize:11,fontWeight:900,color:'#ff9fcf',marginBottom:4}}>🎁 プレゼントボックス</div>
+      <div style={{fontSize:10,opacity:0.8,lineHeight:1.5}}>イベント報酬・ログインボーナス・配布物をここで受け取ります。<b style={{color:'#ef5350'}}>期限切れに注意</b>。</div>
+    </div>
+
+    {/* 一括受取ボタン */}
+    {valid.length>0&&<button onClick={()=>d({type:'CLAIM_ALL_GIFTS'})} style={{...FF,width:'100%',padding:'12px 14px',marginBottom:10,borderRadius:14,border:'2px solid #ff9fcf',background:'linear-gradient(135deg,rgba(255,159,207,0.25),rgba(191,136,255,0.25))',color:'#fff',cursor:'pointer',fontSize:13,fontWeight:900,boxShadow:'0 0 14px rgba(255,159,207,0.35)'}}>
+      🎁 すべて受け取る（{valid.length}件）
+    </button>}
+
+    {/* 期限切れ警告 */}
+    {expired.length>0&&<div style={{...CARD,marginBottom:10,padding:'8px 12px',border:'1px solid rgba(239,83,80,0.4)',background:'rgba(239,83,80,0.08)',fontSize:10,color:'#ef9a9a',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+      <span>⌛ 期限切れ {expired.length}件</span>
+      <button onClick={()=>d({type:'PURGE_EXPIRED_GIFTS'})} style={{...FF,padding:'4px 10px',borderRadius:8,border:'1px solid rgba(239,83,80,0.5)',background:'transparent',color:'#ef9a9a',cursor:'pointer',fontSize:9,fontWeight:700}}>削除</button>
+    </div>}
+
+    {/* リスト */}
+    {valid.length===0&&expired.length===0?<div style={{...CARD,textAlign:'center',padding:'40px 14px',opacity:0.5}}>
+      <div style={{fontSize:48,marginBottom:8}}>📭</div>
+      <div style={{fontSize:11}}>プレゼントはありません</div>
+    </div>:<div style={{display:'flex',flexDirection:'column',gap:6}}>
+      {[...valid,...expired].map(g=>{
+        const isExpired=g.expiresAt&&g.expiresAt<=now;
+        const expiringSoon=g.expiresAt&&!isExpired&&(g.expiresAt-now)<86400000*3;
+        return <div key={g.id} style={{...CARD,padding:'10px 12px',border:`1px solid ${isExpired?'rgba(239,83,80,0.3)':expiringSoon?'rgba(255,152,0,0.4)':'rgba(255,255,255,0.1)'}`,opacity:isExpired?0.45:1,display:'flex',gap:10,alignItems:'center'}}>
+          <div style={{fontSize:32,lineHeight:1,minWidth:42,textAlign:'center'}}>{GIFT_ICON[g.type]||'🎁'}</div>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:2}}>
+              <div style={{fontSize:12,fontWeight:900,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{g.title}</div>
+              <div style={{fontSize:10,fontWeight:900,color:'#ffd700'}}>{giftDetailText(g)}</div>
+            </div>
+            {g.desc&&<div style={{fontSize:9,opacity:0.7,marginBottom:2,lineHeight:1.4}}>{g.desc}</div>}
+            <div style={{display:'flex',gap:8,fontSize:8,opacity:0.55,marginTop:3}}>
+              <span>送付元: {g.from}</span>
+              <span style={{color:isExpired?'#ef5350':expiringSoon?'#ff9800':undefined,fontWeight:expiringSoon||isExpired?900:400}}>⌛ {fmtTimeLeft(g.expiresAt)}</span>
+            </div>
+          </div>
+          {!isExpired&&<button onClick={()=>d({type:'CLAIM_GIFT',id:g.id})} style={{...FF,padding:'8px 14px',borderRadius:10,border:'none',background:'linear-gradient(135deg,#ff9fcf,#bf88ff)',color:'#fff',cursor:'pointer',fontSize:11,fontWeight:900,whiteSpace:'nowrap'}}>受取</button>}
+        </div>;
+      })}
+    </div>}
+  </div>;
+}
+
 // ─── DEX PANEL (図鑑) ────────────────────────────────────
 function DexPanel({s,d}){
   const [mode,setMode]=useState('monster'); // monster | enemy
@@ -3758,17 +4043,50 @@ function DexPanel({s,d}){
         </div>
       </div>
       {owned&&<>
-        <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:5,marginBottom:8,padding:'8px 0',borderTop:'1px solid rgba(255,255,255,0.08)',borderBottom:'1px solid rgba(255,255,255,0.08)'}}>
-          {[['HP',detail.stats.hp,'#ef5350'],['ATK',detail.stats.atk,'#ff7043'],['DEF',detail.stats.def,'#42a5f5'],['SPD',detail.stats.spd,'#66bb6a'],['LUK',detail.stats.luk,'#ab47bc']].map(([k,v,c])=><div key={k} style={{textAlign:'center'}}>
-            <div style={{fontSize:8,fontWeight:900,color:c}}>{k}</div>
-            <div style={{fontSize:11,fontWeight:700,marginTop:1}}>{v||0}</div>
-          </div>)}
-        </div>
-        {mode==='monster'&&detail.skill&&<div style={{fontSize:10,padding:'6px 0'}}>
-          <div style={{fontWeight:900,color:'#bf88ff',marginBottom:2}}>{detail.skill.icon} {detail.skill.name}</div>
-          <div style={{opacity:0.75,lineHeight:1.4}}>{detail.skill.desc}</div>
-        </div>}
-        {mode==='enemy'&&(detail.xp||detail.gold)&&<div style={{fontSize:9,opacity:0.7,marginTop:4}}>撃破報酬: {detail.xp?`XP+${detail.xp}`:''} {detail.gold?` 💰+${detail.gold}`:''}</div>}
+        {(()=>{
+          const isEnemy=mode==='enemy';
+          // 敵の場合は撃退回数で詳細表示を段階アンロック
+          const kills=isEnemy?(s.dex?.enemyDefeats?.[selType]||0):Infinity;
+          const showStats=!isEnemy||kills>=5;
+          const showLoot=!isEnemy||kills>=10;
+          const showRewards=!isEnemy||kills>=20;
+          // 出現する敵のloot配列（撃退回数10回以上で表示）
+          const enemyLoot=isEnemy?(ENEMIES[selType]?.loot||[]):[];
+          return <>
+            {isEnemy&&<div style={{fontSize:9,marginBottom:6,padding:'4px 8px',borderRadius:8,background:'rgba(255,107,157,0.08)',border:'1px solid rgba(255,107,157,0.2)',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <span style={{color:'#ff9fcf',fontWeight:900}}>⚔ 撃退回数: {kills}</span>
+              <span style={{fontSize:8,opacity:0.65}}>
+                {kills<5&&`5回でステ開示`}
+                {kills>=5&&kills<10&&`10回で素材開示`}
+                {kills>=10&&kills<20&&`20回で報酬詳細`}
+                {kills>=20&&`✓ 完全解析`}
+              </span>
+            </div>}
+            {/* ステータス（味方は常に表示、敵は5回以上） */}
+            {showStats?<div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:5,marginBottom:8,padding:'8px 0',borderTop:'1px solid rgba(255,255,255,0.08)',borderBottom:'1px solid rgba(255,255,255,0.08)'}}>
+              {[['HP',detail.stats.hp,'#ef5350'],['ATK',detail.stats.atk,'#ff7043'],['DEF',detail.stats.def,'#42a5f5'],['SPD',detail.stats.spd,'#66bb6a'],['LUK',detail.stats.luk,'#ab47bc']].map(([k,v,c])=><div key={k} style={{textAlign:'center'}}>
+                <div style={{fontSize:8,fontWeight:900,color:c}}>{k}</div>
+                <div style={{fontSize:11,fontWeight:700,marginTop:1}}>{v||0}</div>
+              </div>)}
+            </div>:<div style={{padding:'10px 0',borderTop:'1px solid rgba(255,255,255,0.08)',borderBottom:'1px solid rgba(255,255,255,0.08)',marginBottom:8,textAlign:'center',fontSize:10,opacity:0.4}}>🔒 ステータス（撃退5回で解放）</div>}
+            {/* 味方のスキル情報 */}
+            {!isEnemy&&detail.skill&&<div style={{fontSize:10,padding:'6px 0'}}>
+              <div style={{fontWeight:900,color:'#bf88ff',marginBottom:2}}>{detail.skill.icon} {detail.skill.name}</div>
+              <div style={{opacity:0.75,lineHeight:1.4}}>{detail.skill.desc}</div>
+            </div>}
+            {/* 敵のドロップ素材（10回以上） */}
+            {isEnemy&&(showLoot?<div style={{fontSize:10,padding:'6px 0'}}>
+              <div style={{fontWeight:900,color:'#66bb6a',marginBottom:4}}>🎒 ドロップ素材</div>
+              {enemyLoot.length>0?<div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+                {[...new Set(enemyLoot)].map(k=>ITEMS[k]?<div key={k} style={{display:'flex',alignItems:'center',gap:3,fontSize:9,padding:'3px 7px',borderRadius:8,background:'rgba(102,187,106,0.1)',border:'1px solid rgba(102,187,106,0.3)'}}><ItemIcon k={k} size={14} gap={2}/>{ITEMS[k].name}</div>:null)}
+              </div>:<div style={{fontSize:9,opacity:0.55}}>ドロップなし</div>}
+            </div>:<div style={{fontSize:10,padding:'8px 0',opacity:0.4,textAlign:'center'}}>🔒 ドロップ素材（撃退10回で解放）</div>)}
+            {/* 敵の撃破報酬詳細（20回以上） */}
+            {isEnemy&&(showRewards?<div style={{fontSize:9,opacity:0.8,marginTop:4,padding:'5px 8px',borderRadius:8,background:'rgba(255,215,0,0.05)',border:'1px solid rgba(255,215,0,0.2)'}}>
+              <span style={{color:'#ffd700',fontWeight:900}}>💰 撃破報酬</span>　XP+{detail.xp||0} / 💰+{detail.gold||0}
+            </div>:<div style={{fontSize:10,padding:'8px 0',opacity:0.4,textAlign:'center'}}>🔒 撃破報酬詳細（撃退20回で解放）</div>)}
+          </>;
+        })()}
       </>}
     </div>}
 
@@ -3786,10 +4104,34 @@ function DexPanel({s,d}){
           </div>
           <div style={{fontSize:7,fontWeight:900,marginTop:2,color:isOwned?rc:'rgba(255,255,255,0.3)',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{isOwned?data.name:'???'}</div>
           {isOwned&&<div style={{position:'absolute',top:1,right:1,fontSize:6,fontWeight:900,color:RC[data.rarity],opacity:0.85}}>{data.rarity}</div>}
+          {isOwned&&mode==='enemy'&&(s.dex?.enemyDefeats?.[t]||0)>0&&<div style={{position:'absolute',bottom:1,right:1,fontSize:6,fontWeight:900,color:'#ff9fcf',background:'rgba(0,0,0,0.45)',padding:'0 4px',borderRadius:5}}>×{s.dex.enemyDefeats[t]}</div>}
         </button>;
       })}
     </div>
     <div style={{textAlign:'center',marginTop:8,fontSize:10,opacity:0.65}}>進捗 {known}/{total} ({Math.round(known/Math.max(1,total)*100)}%)</div>
+
+    {/* コンプリート報酬 */}
+    <div style={{...CARD,marginTop:12,padding:'10px 12px',background:'linear-gradient(135deg,rgba(255,215,0,0.06),rgba(255,107,157,0.04))',border:'1px solid rgba(255,215,0,0.3)'}}>
+      <div style={{fontSize:11,fontWeight:900,color:'#ffd700',marginBottom:8}}>🏆 達成率報酬（{mode==='monster'?'味方':'敵'}図鑑）</div>
+      {(()=>{
+        const kind=mode==='monster'?'monsters':'enemies';
+        const prog=dexProgress(s,kind);
+        const claimed=new Set(s.dex?.claimedRewards?.[kind]||[]);
+        return <div style={{display:'flex',flexDirection:'column',gap:6}}>
+          {DEX_COMP_THRESHOLDS.map(th=>{
+            const rewards=DEX_COMP_REWARDS[kind][th]||[];
+            const reached=prog.pct>=th;
+            const taken=claimed.has(th);
+            const descs=rewards.map(r=>r.desc).join(' + ');
+            return <div key={th} style={{display:'flex',gap:8,alignItems:'center',padding:'7px 10px',borderRadius:10,border:`1px solid ${taken?'rgba(102,187,106,0.4)':reached?'rgba(255,215,0,0.5)':'rgba(255,255,255,0.08)'}`,background:taken?'rgba(102,187,106,0.06)':reached?'rgba(255,215,0,0.08)':'rgba(255,255,255,0.02)',opacity:reached?1:0.55}}>
+              <div style={{fontSize:14,fontWeight:900,minWidth:42,color:taken?'#66bb6a':reached?'#ffd700':'rgba(255,255,255,0.5)'}}>{th}%</div>
+              <div style={{flex:1,fontSize:10,opacity:0.85}}>{descs}</div>
+              {taken?<div style={{fontSize:10,color:'#66bb6a',fontWeight:900}}>✓ 受取済</div>:reached?<button onClick={()=>d({type:'CLAIM_DEX_COMP_REWARD',kind,threshold:th})} style={{...FF,padding:'5px 12px',borderRadius:8,border:'none',background:'linear-gradient(135deg,#ffd700,#ff9800)',color:'#1a0a00',cursor:'pointer',fontSize:10,fontWeight:900}}>受取</button>:<div style={{fontSize:9,opacity:0.5}}>未達成</div>}
+            </div>;
+          })}
+        </div>;
+      })()}
+    </div>
   </div>;
 }
 
@@ -4310,6 +4652,33 @@ function GachaScreen({s,d}){
             </div>;
           })}
         </div>
+      </div>
+      {/* 天井カウンタ */}
+      <div style={{...CARD,marginBottom:12,padding:'10px 12px',background:'linear-gradient(135deg,rgba(255,215,0,0.05),rgba(255,107,157,0.05))',border:'1px solid rgba(255,215,0,0.25)'}}>
+        <div style={{fontSize:11,fontWeight:900,color:'#ffd700',marginBottom:6}}>🎯 天井（次の確定排出まで）</div>
+        {(()=>{
+          const pity=s.gachaPity||{sinceSR:0,sinceUR:0,sinceLR:0};
+          const tiers=[
+            ['SR',pity.sinceSR,GACHA_PITY.SR,RC.SR],
+            ['UR',pity.sinceUR,GACHA_PITY.UR,RC.UR],
+            ['LR',pity.sinceLR,GACHA_PITY.LR,RC.LR],
+          ];
+          return <div style={{display:'flex',flexDirection:'column',gap:5}}>
+            {tiers.map(([r,cur,max,col])=>{
+              const remain=Math.max(0,max-cur);
+              const pct=Math.min(100,(cur/max)*100);
+              return <div key={r}>
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:9,marginBottom:2}}>
+                  <span style={{color:col,fontWeight:900}}>{r}以上確定</span>
+                  <span style={{opacity:0.75}}>{remain===0?<b style={{color:col}}>次回確定！</b>:`あと${remain}回`}</span>
+                </div>
+                <div style={{height:5,background:'rgba(0,0,0,0.3)',borderRadius:3,overflow:'hidden'}}>
+                  <div style={{width:`${pct}%`,height:'100%',background:`linear-gradient(90deg,${col}88,${col})`,transition:'width 0.3s'}}/>
+                </div>
+              </div>;
+            })}
+          </div>;
+        })()}
       </div>
       <div style={{...CARD,fontSize:10,opacity:0.6,lineHeight:1.7}}>
         💡 重複モンスターは自動で限界突破され、ステータスが+12%/★アップします。<br/>
@@ -5646,7 +6015,7 @@ function GameApp({user,userName,cloudInitial,onLogout,offline}){
       <div style={{display:'flex',gap:6,alignItems:'center'}}>
         <button onClick={()=>setMenuOpen(true)} title="メニュー" style={{position:'relative',background:'rgba(191,136,255,0.10)',border:'1px solid rgba(191,136,255,0.35)',borderRadius:8,cursor:'pointer',fontSize:18,padding:'2px 10px',color:'#fff',lineHeight:1,...FF}}>
           ≡
-          {(s.dex?.pendingDiamonds||0)>0&&<span style={{position:'absolute',top:-2,right:-2,minWidth:8,height:8,borderRadius:5,background:'#00e5ff',boxShadow:'0 0 6px #00e5ff'}}/>}
+          {((s.dex?.pendingDiamonds||0)>0||(s.giftBox||[]).some(g=>!g.expiresAt||g.expiresAt>Date.now()))&&<span style={{position:'absolute',top:-2,right:-2,minWidth:8,height:8,borderRadius:5,background:'#ff9fcf',boxShadow:'0 0 6px #ff9fcf'}}/>}
         </button>
       </div>
       <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:2}}>
@@ -5685,6 +6054,7 @@ function GameApp({user,userName,cloudInitial,onLogout,offline}){
       {s.screen==='collection' &&<CollectionScreen s={s} d={d}/>}
       {s.screen==='bag'        &&<BagScreen s={s} d={d}/>}
       {s.screen==='dex'        &&<div style={{width:'100%',padding:12,paddingBottom:80,animation:'fadeIn 0.4s ease-out'}}><DexPanel s={s} d={d}/></div>}
+      {s.screen==='gift'       &&<div style={{width:'100%',padding:12,paddingBottom:80,animation:'fadeIn 0.4s ease-out'}}><GiftBoxPanel s={s} d={d}/></div>}
     </div>
     {/* 設定モーダル（どこからでも開ける） */}
     {showSettings&&<SettingsModal s={s} d={d} onClose={()=>setShowSettings(false)}/>}
@@ -5700,7 +6070,7 @@ function GameApp({user,userName,cloudInitial,onLogout,offline}){
             {key:'dex',icon:'📖',label:'図鑑',badge:(s.dex?.pendingDiamonds||0)>0?'💎':null,onClick:()=>{d({type:'SCREEN',v:'dex'});setMenuOpen(false);}},
             {key:'settings',icon:'⚙',label:'設定',onClick:()=>{setShowSettings(true);setMenuOpen(false);}},
             {key:'save',icon:'💾',label:'セーブ・ロード',sub:'パスワード保存',onClick:()=>{setShowSave(true);setMenuOpen(false);}},
-            {key:'gift',icon:'🎁',label:'プレゼントボックス',sub:'準備中',disabled:true},
+            {key:'gift',icon:'🎁',label:'プレゼントボックス',badge:(s.giftBox||[]).filter(g=>!g.expiresAt||g.expiresAt>Date.now()).length>0?String((s.giftBox||[]).filter(g=>!g.expiresAt||g.expiresAt>Date.now()).length):null,onClick:()=>{d({type:'SCREEN',v:'gift'});setMenuOpen(false);}},
           ];
           return items.map(it=><button key={it.key} onClick={()=>{if(it.disabled)return;it.onClick&&it.onClick();}} disabled={it.disabled} style={{...FF,width:'100%',padding:'12px 18px',background:'none',border:'none',borderLeft:'3px solid transparent',color:it.disabled?'rgba(255,255,255,0.3)':'#fff',cursor:it.disabled?'default':'pointer',fontSize:13,fontWeight:700,display:'flex',alignItems:'center',gap:12,textAlign:'left',transition:'all 0.15s',position:'relative'}}
             onMouseEnter={e=>{if(!it.disabled)e.currentTarget.style.background='rgba(191,136,255,0.12)';e.currentTarget.style.borderLeftColor=it.disabled?'transparent':'#bf88ff';}}
