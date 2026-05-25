@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v2.0.6"; // 図鑑ダイヤを受取制に変更(図鑑画面の受取ボタンで一括加算+バッジ表示)
+const APP_VERSION = "v2.0.8"; // ハンバーガーメニュー追加(図鑑/設定/セーブ/プレゼント/クラウド同期)
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -90,6 +90,7 @@ const CSS = `
   @keyframes float  { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-7px)} }
   @keyframes glow   { 0%,100%{filter:drop-shadow(0 0 5px #ff9fcf)} 50%{filter:drop-shadow(0 0 18px #bf88ff)} }
   @keyframes fadeIn { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
+  @keyframes slideInLeft { from{transform:translateX(-100%)} to{transform:translateX(0)} }
   @keyframes shake  { 0%,100%{transform:translateX(0)} 20%{transform:translateX(-6px)} 40%{transform:translateX(6px)} 60%{transform:translateX(-4px)} 80%{transform:translateX(4px)} }
   @keyframes slash  { 0%{opacity:0;transform:scale(0.4) rotate(-30deg)} 50%{opacity:1;transform:scale(1.3) rotate(5deg)} 100%{opacity:0;transform:scale(0.9) rotate(10deg)} }
   @keyframes coinPop{ 0%{transform:translate(-50%,-50%);opacity:1} 100%{transform:translate(-50%,-200%);opacity:0} }
@@ -3012,7 +3013,15 @@ function QuestScreen({s,d}){
         </div>;
       })()}
       {/* 修行: 章タブなしで5個並べる */}
-      {questTab==='training'&&Object.entries(QUESTS).filter(([_,q])=>q.kind==='training').map(([key,q])=>{
+      {questTab==='training'&&<>
+        <div style={{...CARD,marginBottom:10,padding:'10px 14px',background:'linear-gradient(135deg,rgba(255,215,0,0.10),rgba(102,187,106,0.06))',border:'1px solid rgba(255,215,0,0.35)',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+          <div>
+            <div style={{fontSize:10,opacity:0.7,marginBottom:2}}>所持している鍵</div>
+            <div style={{fontSize:9,opacity:0.5}}>通常クエストやボスから入手</div>
+          </div>
+          <div style={{fontSize:18,fontWeight:900,color:(s.keys||0)>0?'#ffd700':'#ef5350',textShadow:(s.keys||0)>0?'0 0 8px #ffd700aa':'none'}}>🗝 ×{s.keys||0}</div>
+        </div>
+        {Object.entries(QUESTS).filter(([_,q])=>q.kind==='training').map(([key,q])=>{
         const keyCost=q.keyCost||1;
         const hasKeys=(s.keys||0)>=keyCost;
         const keyLocked=!hasKeys;
@@ -3038,6 +3047,7 @@ function QuestScreen({s,d}){
           {keyLocked&&<div style={{fontSize:11,opacity:0.5,color:'#ef5350'}}>鍵不足</div>}
         </button>;
       })}
+      </>}
     </div>
   </div>;
 
@@ -4338,13 +4348,17 @@ function GachaScreen({s,d}){
 const SORT_KEYS={
   id:'入手順',name:'名前順',rarity:'レア度順',level:'Lv順',
 };
-function CollectionScreen({s,d}){
-  const [tab,setTab]=useState('owned');
+function CollectionScreen({s,d,initialTab,onInitConsumed}){
+  const [tab,setTab]=useState(initialTab||'owned');
   const [sel,setSel]=useState(null);
   const [sortBy,setSortBy]=useState(()=>{try{return localStorage.getItem('mlg_sort')||'id'}catch(e){return 'id'}});
   const [renameId,setRenameId]=useState(null); // リネーム対象のモンスターID
   const [renameText,setRenameText]=useState('');
   useEffect(()=>{try{localStorage.setItem('mlg_sort',sortBy)}catch(e){}},[sortBy]);
+  // メニューから渡された初期タブを反映（1回のみ）
+  useEffect(()=>{
+    if(initialTab){setTab(initialTab);onInitConsumed&&onInitConsumed();}
+  },[initialTab]);
   const selMon=s.monsters.find(m=>m.id===sel);
   const pm=s.monsters.find(m=>m.id===s.party.main)||s.monsters[0];
   const renameMon=s.monsters.find(m=>m.id===renameId);
@@ -5512,6 +5526,8 @@ function GameApp({user,userName,cloudInitial,onLogout,offline}){
   const [cloudSyncStatus,setCloudSyncStatus]=useState(''); // ''(idle) | 'saving' | 'saved' | 'error'
   const [cloudInitDone,setCloudInitDone]=useState(false);
   const [showSettings,setShowSettings]=useState(false); // 設定モーダル（どこからでも開ける）
+  const [menuOpen,setMenuOpen]=useState(false); // ハンバーガーメニュー
+  const [collectionInitTab,setCollectionInitTab]=useState(null); // メニューから開く時のサブタブ指定
 
   // 起動時: クラウドデータがあればそれをロード（ローカルより優先）
   useEffect(()=>{
@@ -5627,8 +5643,10 @@ function GameApp({user,userName,cloudInitial,onLogout,offline}){
     </div>}
     <div style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 16px 8px',background:'linear-gradient(180deg,rgba(20,5,45,0.88) 0%,transparent 100%)'}}>
       <div style={{display:'flex',gap:6,alignItems:'center'}}>
-        <button onClick={()=>setShowSave(true)} title="セーブ" style={{background:'rgba(255,255,255,0.06)',border:'1px solid rgba(255,255,255,0.12)',borderRadius:8,cursor:'pointer',fontSize:15,padding:'4px 8px',color:'rgba(255,255,255,0.85)',...FF}}>💾</button>
-        <button onClick={()=>setShowSettings(true)} title="設定" style={{background:'rgba(191,136,255,0.10)',border:'1px solid rgba(191,136,255,0.35)',borderRadius:8,cursor:'pointer',fontSize:15,padding:'4px 8px',color:'#bf88ff',...FF}}>⚙</button>
+        <button onClick={()=>setMenuOpen(true)} title="メニュー" style={{position:'relative',background:'rgba(191,136,255,0.10)',border:'1px solid rgba(191,136,255,0.35)',borderRadius:8,cursor:'pointer',fontSize:18,padding:'2px 10px',color:'#fff',lineHeight:1,...FF}}>
+          ≡
+          {(s.dex?.pendingDiamonds||0)>0&&<span style={{position:'absolute',top:-2,right:-2,minWidth:8,height:8,borderRadius:5,background:'#00e5ff',boxShadow:'0 0 6px #00e5ff'}}/>}
+        </button>
       </div>
       <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:2}}>
         <div style={{display:'flex',alignItems:'center',gap:6}}>
@@ -5646,7 +5664,6 @@ function GameApp({user,userName,cloudInitial,onLogout,offline}){
       <div style={{display:'flex',alignItems:'center',gap:8}}>
         <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:3}}>
           <div style={{display:'flex',alignItems:'center',gap:5}}>
-            {(s.keys||0)>0&&<div style={{background:'rgba(102,187,106,0.15)',border:'1px solid #66bb6a',borderRadius:20,padding:'3px 7px',fontSize:11,fontWeight:900,color:'#a5d6a7'}}>🗝{s.keys}</div>}
             {s.shop.pendingGold>0&&<div style={{fontSize:9,color:'#ffd700',fontWeight:900,opacity:0.8}}>+{s.shop.pendingGold}G</div>}
             <div style={{background:'linear-gradient(135deg,rgba(0,229,255,0.15),rgba(124,77,255,0.15))',border:'1px solid #00e5ff',borderRadius:20,padding:'3px 8px',fontSize:12,fontWeight:900,color:'#80deea',textShadow:'0 0 6px #00e5ff'}}>💎{s.diamonds||0}</div>
             <div style={{background:'rgba(255,215,0,0.15)',border:'1px solid #ffd700',borderRadius:20,padding:'3px 8px',fontSize:12,fontWeight:900,color:'#ffd700'}}>💰{s.coins}</div>
@@ -5664,11 +5681,60 @@ function GameApp({user,userName,cloudInitial,onLogout,offline}){
       {s.screen==='home'       &&<HomeScreen s={s} d={d}/>}
       {s.screen==='quest'      &&<QuestScreen s={s} d={d}/>}
       {s.screen==='gacha'      &&<GachaScreen s={s} d={d}/>}
-      {s.screen==='collection' &&<CollectionScreen s={s} d={d}/>}
+      {s.screen==='collection' &&<CollectionScreen s={s} d={d} initialTab={collectionInitTab} onInitConsumed={()=>setCollectionInitTab(null)}/>}
       {s.screen==='bag'        &&<BagScreen s={s} d={d}/>}
     </div>
     {/* 設定モーダル（どこからでも開ける） */}
     {showSettings&&<SettingsModal s={s} d={d} onClose={()=>setShowSettings(false)}/>}
+    {/* ハンバーガーメニュー（左サイドからスライドイン） */}
+    {menuOpen&&<div onClick={()=>setMenuOpen(false)} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.65)',zIndex:1100,animation:'fadeIn 0.2s ease-out'}}>
+      <div onClick={e=>e.stopPropagation()} style={{position:'absolute',top:0,left:0,bottom:0,width:280,maxWidth:'85vw',background:'linear-gradient(180deg,#1a0838 0%,#0a0420 100%)',borderRight:'1px solid rgba(191,136,255,0.3)',boxShadow:'4px 0 24px rgba(0,0,0,0.5)',padding:'20px 0',overflowY:'auto',animation:'slideInLeft 0.25s ease-out'}}>
+        <div style={{padding:'0 18px 14px',borderBottom:'1px solid rgba(255,255,255,0.08)',marginBottom:10}}>
+          <div style={{fontSize:14,fontWeight:900,background:'linear-gradient(90deg,#ff9fcf,#bf88ff)',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent'}}>≡ メニュー</div>
+          {user&&!offline&&<div style={{fontSize:9,opacity:0.6,marginTop:3}}>👤 {userName}</div>}
+        </div>
+        {(()=>{
+          const items=[
+            {key:'dex',icon:'📖',label:'図鑑',badge:(s.dex?.pendingDiamonds||0)>0?'💎':null,onClick:()=>{setCollectionInitTab('dex');d({type:'SCREEN',v:'collection'});setMenuOpen(false);}},
+            {key:'settings',icon:'⚙',label:'設定',onClick:()=>{setShowSettings(true);setMenuOpen(false);}},
+            {key:'save',icon:'💾',label:'セーブ・ロード',sub:'パスワード保存',onClick:()=>{setShowSave(true);setMenuOpen(false);}},
+            {key:'gift',icon:'🎁',label:'プレゼントボックス',sub:'準備中',disabled:true},
+          ];
+          return items.map(it=><button key={it.key} onClick={()=>{if(it.disabled)return;it.onClick&&it.onClick();}} disabled={it.disabled} style={{...FF,width:'100%',padding:'12px 18px',background:'none',border:'none',borderLeft:'3px solid transparent',color:it.disabled?'rgba(255,255,255,0.3)':'#fff',cursor:it.disabled?'default':'pointer',fontSize:13,fontWeight:700,display:'flex',alignItems:'center',gap:12,textAlign:'left',transition:'all 0.15s',position:'relative'}}
+            onMouseEnter={e=>{if(!it.disabled)e.currentTarget.style.background='rgba(191,136,255,0.12)';e.currentTarget.style.borderLeftColor=it.disabled?'transparent':'#bf88ff';}}
+            onMouseLeave={e=>{e.currentTarget.style.background='none';e.currentTarget.style.borderLeftColor='transparent';}}>
+            <span style={{fontSize:22,lineHeight:1}}>{it.icon}</span>
+            <span style={{flex:1}}>
+              <div>{it.label}</div>
+              {it.sub&&<div style={{fontSize:9,opacity:0.5,marginTop:2,fontWeight:400}}>{it.sub}</div>}
+            </span>
+            {it.badge&&<span style={{background:'#00e5ff',color:'#000',fontSize:9,fontWeight:900,padding:'2px 6px',borderRadius:8,boxShadow:'0 0 6px #00e5ff'}}>{it.badge}</span>}
+          </button>);
+        })()}
+        {/* クラウド同期セクション */}
+        {user&&!offline&&<div style={{margin:'10px 18px',padding:'12px 14px',background:'rgba(66,165,245,0.08)',borderRadius:12,border:'1px solid rgba(66,165,245,0.3)'}}>
+          <div style={{fontSize:11,fontWeight:900,marginBottom:6,display:'flex',alignItems:'center',gap:6,color:'#90caf9'}}>☁ クラウド同期</div>
+          <div style={{fontSize:9,opacity:0.75,marginBottom:8,lineHeight:1.5}}>
+            {cloudSyncStatus==='saving'&&<span style={{color:'#42a5f5'}}>同期中…</span>}
+            {cloudSyncStatus==='saved'&&<span style={{color:'#66bb6a'}}>✓ 最新の状態</span>}
+            {cloudSyncStatus==='error'&&<span style={{color:'#ef5350'}}>⚠ 同期に失敗しました</span>}
+            {!cloudSyncStatus&&<span style={{opacity:0.6}}>5秒ごとに自動同期されます</span>}
+          </div>
+          <button onClick={async()=>{
+            if(!fbDb||!user)return;
+            setCloudSyncStatus('saving');
+            try{
+              const{toast,...sv}=s;
+              const{doc,setDoc}=await import('firebase/firestore');
+              await setDoc(doc(fbDb,'users',user.uid),{saveData:sv,name:userName,updatedAt:new Date().toISOString()},{merge:true});
+              setCloudSyncStatus('saved');
+            }catch(e){setCloudSyncStatus('error');}
+          }} style={{...FF,width:'100%',padding:'7px 0',borderRadius:8,border:'none',background:'linear-gradient(135deg,#42a5f5,#1976d2)',color:'#fff',cursor:'pointer',fontSize:11,fontWeight:900}}>いま同期する</button>
+        </div>}
+        {/* ログアウト */}
+        {user&&!offline&&<button onClick={()=>{if(confirm('ログアウトしますか？'))onLogout&&onLogout();}} style={{...FF,width:'100%',padding:'10px 18px',marginTop:10,background:'none',border:'none',color:'rgba(239,83,80,0.8)',cursor:'pointer',fontSize:11,fontWeight:700,textAlign:'left'}}>🚪 ログアウト</button>}
+      </div>
+    </div>}
     <nav style={{position:'fixed',bottom:0,left:'50%',transform:'translateX(-50%)',width:'100%',maxWidth:430,background:'rgba(12,4,28,0.97)',backdropFilter:'blur(16px)',borderTop:'1px solid rgba(255,255,255,0.1)',display:'flex',justifyContent:'space-around',padding:'7px 0 14px'}}>
       {TABS.map(([id,ico,lbl])=><button key={id} onClick={()=>d({type:'SCREEN',v:id})} style={{background:'none',border:'none',cursor:'pointer',fontFamily:"'M PLUS Rounded 1c',sans-serif",display:'flex',flexDirection:'column',alignItems:'center',gap:1,color:s.screen===id?'#ff9fcf':'rgba(255,255,255,0.35)',transition:'color 0.15s'}}>
         <span style={{fontSize:20,filter:s.screen===id?'drop-shadow(0 0 6px #ff9fcf)':'none'}}>{ico}</span>
