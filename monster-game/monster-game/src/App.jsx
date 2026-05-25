@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v2.0.9"; // 図鑑リセット遡及処理(既存所持モンスター分のダイヤを未受取に追加)
+const APP_VERSION = "v2.0.10"; // 図鑑をモンスタータブから独立画面化(メニュー専用アクセス)
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -4361,17 +4361,13 @@ function GachaScreen({s,d}){
 const SORT_KEYS={
   id:'入手順',name:'名前順',rarity:'レア度順',level:'Lv順',
 };
-function CollectionScreen({s,d,initialTab,onInitConsumed}){
-  const [tab,setTab]=useState(initialTab||'owned');
+function CollectionScreen({s,d}){
+  const [tab,setTab]=useState('owned');
   const [sel,setSel]=useState(null);
   const [sortBy,setSortBy]=useState(()=>{try{return localStorage.getItem('mlg_sort')||'id'}catch(e){return 'id'}});
   const [renameId,setRenameId]=useState(null); // リネーム対象のモンスターID
   const [renameText,setRenameText]=useState('');
   useEffect(()=>{try{localStorage.setItem('mlg_sort',sortBy)}catch(e){}},[sortBy]);
-  // メニューから渡された初期タブを反映（1回のみ）
-  useEffect(()=>{
-    if(initialTab){setTab(initialTab);onInitConsumed&&onInitConsumed();}
-  },[initialTab]);
   const selMon=s.monsters.find(m=>m.id===sel);
   const pm=s.monsters.find(m=>m.id===s.party.main)||s.monsters[0];
   const renameMon=s.monsters.find(m=>m.id===renameId);
@@ -4399,13 +4395,9 @@ function CollectionScreen({s,d,initialTab,onInitConsumed}){
   return <div style={{width:'100%',padding:12,animation:'fadeIn 0.4s ease-out'}}>
     {/* サブタブ */}
     <div style={{display:'flex',gap:2,marginBottom:12,background:'rgba(255,255,255,0.04)',borderRadius:14,padding:3}}>
-      {[['owned','📦 所持'],['party','⚔ 編成'],['enhance','💪 強化'],['fusion','⚗ 合成'],['sell','💰 売却'],['dex','📖 図鑑']].map(([k,l])=>{
-        const showBadge=k==='dex'&&(s.dex?.pendingDiamonds||0)>0;
-        return <button key={k} onClick={()=>setTab(k)} style={{...FF,flex:1,padding:'8px 0',borderRadius:10,border:'none',fontWeight:900,fontSize:8,cursor:'pointer',background:tab===k?'linear-gradient(135deg,#bf88ff,#7c3aed)':'transparent',color:tab===k?'#fff':'rgba(255,255,255,0.5)',transition:'all 0.18s',position:'relative'}}>
-          {l}
-          {showBadge&&<span style={{position:'absolute',top:0,right:2,minWidth:10,height:10,borderRadius:5,background:'#00e5ff',boxShadow:'0 0 6px #00e5ff'}}/>}
-        </button>;
-      })}
+      {[['owned','📦 所持'],['party','⚔ 編成'],['enhance','💪 強化'],['fusion','⚗ 合成'],['sell','💰 売却']].map(([k,l])=>(
+        <button key={k} onClick={()=>setTab(k)} style={{...FF,flex:1,padding:'8px 0',borderRadius:10,border:'none',fontWeight:900,fontSize:9,cursor:'pointer',background:tab===k?'linear-gradient(135deg,#bf88ff,#7c3aed)':'transparent',color:tab===k?'#fff':'rgba(255,255,255,0.5)',transition:'all 0.18s'}}>{l}</button>
+      ))}
     </div>
 
     {tab==='owned'&&<>
@@ -4566,9 +4558,6 @@ function CollectionScreen({s,d,initialTab,onInitConsumed}){
 
     {/* 💰 売却タブ */}
     {tab==='sell'&&<SellPanel s={s} d={d}/>}
-
-    {/* 📖 図鑑タブ */}
-    {tab==='dex'&&<DexPanel s={s} d={d}/>}
 
     {/* リネームモーダル */}
     {renameMon&&<div onClick={()=>setRenameId(null)} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.75)',zIndex:1000,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
@@ -5540,7 +5529,6 @@ function GameApp({user,userName,cloudInitial,onLogout,offline}){
   const [cloudInitDone,setCloudInitDone]=useState(false);
   const [showSettings,setShowSettings]=useState(false); // 設定モーダル（どこからでも開ける）
   const [menuOpen,setMenuOpen]=useState(false); // ハンバーガーメニュー
-  const [collectionInitTab,setCollectionInitTab]=useState(null); // メニューから開く時のサブタブ指定
 
   // 起動時: クラウドデータがあればそれをロード（ローカルより優先）
   useEffect(()=>{
@@ -5694,8 +5682,9 @@ function GameApp({user,userName,cloudInitial,onLogout,offline}){
       {s.screen==='home'       &&<HomeScreen s={s} d={d}/>}
       {s.screen==='quest'      &&<QuestScreen s={s} d={d}/>}
       {s.screen==='gacha'      &&<GachaScreen s={s} d={d}/>}
-      {s.screen==='collection' &&<CollectionScreen s={s} d={d} initialTab={collectionInitTab} onInitConsumed={()=>setCollectionInitTab(null)}/>}
+      {s.screen==='collection' &&<CollectionScreen s={s} d={d}/>}
       {s.screen==='bag'        &&<BagScreen s={s} d={d}/>}
+      {s.screen==='dex'        &&<div style={{width:'100%',padding:12,paddingBottom:80,animation:'fadeIn 0.4s ease-out'}}><DexPanel s={s} d={d}/></div>}
     </div>
     {/* 設定モーダル（どこからでも開ける） */}
     {showSettings&&<SettingsModal s={s} d={d} onClose={()=>setShowSettings(false)}/>}
@@ -5708,7 +5697,7 @@ function GameApp({user,userName,cloudInitial,onLogout,offline}){
         </div>
         {(()=>{
           const items=[
-            {key:'dex',icon:'📖',label:'図鑑',badge:(s.dex?.pendingDiamonds||0)>0?'💎':null,onClick:()=>{setCollectionInitTab('dex');d({type:'SCREEN',v:'collection'});setMenuOpen(false);}},
+            {key:'dex',icon:'📖',label:'図鑑',badge:(s.dex?.pendingDiamonds||0)>0?'💎':null,onClick:()=>{d({type:'SCREEN',v:'dex'});setMenuOpen(false);}},
             {key:'settings',icon:'⚙',label:'設定',onClick:()=>{setShowSettings(true);setMenuOpen(false);}},
             {key:'save',icon:'💾',label:'セーブ・ロード',sub:'パスワード保存',onClick:()=>{setShowSave(true);setMenuOpen(false);}},
             {key:'gift',icon:'🎁',label:'プレゼントボックス',sub:'準備中',disabled:true},
