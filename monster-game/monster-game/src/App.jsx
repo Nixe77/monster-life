@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v1.8.1"; // 裏面3種類統一+スキップ文言整理+設定グローバル化
+const APP_VERSION = "v1.8.2"; // 裏面サイズ統一+戦闘サブの星非表示
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -1715,7 +1715,7 @@ const EQ_OV={
   holy_bow:(c)=>{const f=(x,y,col)=>{c.fillStyle=col;c.fillRect(x,y,1,1)};f(1,6,'#ffd700');f(0,7,'#ffd700');f(0,8,'#ffd700');f(0,9,'#ffd700');f(1,10,'#ffd700');f(2,7,'#eceff1');f(2,8,'#eceff1');f(2,9,'#eceff1');f(1,8,'#e0e0e0')},
   poison_dagger:(c)=>{const f=(x,y,col)=>{c.fillStyle=col;c.fillRect(x,y,1,1)};f(2,6,'#4caf50');f(1,7,'#4caf50');f(2,7,'#69f0ae');f(1,8,'#4caf50');f(2,8,'#4caf50');f(2,9,'#795548');f(2,10,'#5d4037');f(1,10,'#9e9e9e');f(3,10,'#9e9e9e')},
 };
-function EquippedMonster({monster,size=80,anim='float'}){
+function EquippedMonster({monster,size=80,anim='float',showStars=true}){
   const ref=useRef(null);
   const eq=monster.equip||{};
   const lb=monster.lb||0;
@@ -1756,7 +1756,7 @@ function EquippedMonster({monster,size=80,anim='float'}){
         animation:anim!=='none'?`${anim} 1.4s ease-in-out infinite`:'none',
       }}/>
     </div>
-    {stars&&<div style={{fontSize:Math.max(8,size*0.18),lineHeight:1,color:lb>=5?'#e040fb':lb>=3?'#ff9800':'#ffd700',filter:`drop-shadow(0 0 4px ${lb>=5?'#e040fb':lb>=3?'#ff9800':'#ffd700'})`,textShadow:'0 0 8px currentColor'}}>{stars}</div>}
+    {showStars&&stars&&<div style={{fontSize:Math.max(8,size*0.18),lineHeight:1,color:lb>=5?'#e040fb':lb>=3?'#ff9800':'#ffd700',filter:`drop-shadow(0 0 4px ${lb>=5?'#e040fb':lb>=3?'#ff9800':'#ffd700'})`,textShadow:'0 0 8px currentColor'}}>{stars}</div>}
   </div>;
 }
 
@@ -3007,7 +3007,7 @@ function QuestScreen({s,d}){
             animation:flash?'pop 0.4s ease-out':(ready?'pulse 1s ease-in-out infinite':undefined)}}>
             {/* モンスタースプライト */}
             <div style={{display:'flex',justifyContent:'center',alignItems:'center',height:34}}>
-              <EquippedMonster monster={sm} size={32} anim={flash?'pop':'float'}/>
+              <EquippedMonster monster={sm} size={32} anim={flash?'pop':'float'} showStars={false}/>
             </div>
             <div style={{fontSize:8,fontWeight:900,color:mi?.color||'#fff',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',marginTop:1}}>{sm.name.substring(0,5)}</div>
             {/* スキルアイコン＋ゲージバー */}
@@ -3724,20 +3724,17 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
         const isZoomTarget=zoomIdx===i;
         return <div key={i} style={{aspectRatio:'2/3',perspective:'600px',position:'relative',opacity:isZoomTarget?0.15:1,transition:'opacity 0.4s'}}>
           <div style={{position:'absolute',inset:0,transformStyle:'preserve-3d',transition:'transform 0.55s cubic-bezier(0.34,1.56,0.64,1)',transform:flippedI?'rotateY(180deg)':'rotateY(0deg)'}}>
-            {/* 裏面（3グループ識別: 低=銀青/中=紫/高=金） */}
+            {/* 裏面（3グループ識別: 低=銀青/中=紫/高=金、サイズは表面と統一） */}
             {(()=>{const ic=backIconOf(backRar);
             const grp=rarityGroup(backRar);
             const isHigh=grp==='high';
-            const isMid=grp==='mid';
-            return <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',borderRadius:8,background:`linear-gradient(135deg,${backCol}33 0%,#1a0533 55%,${backCol}22 100%)`,border:`${isHigh?1.8:1.5}px solid ${backCol}${isHigh?'':'aa'}`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',boxShadow:`0 2px 8px rgba(0,0,0,0.3),inset 0 0 14px ${backCol}33${isHigh?',0 0 12px '+backCol+'88':''}`,overflow:'hidden',position:'relative'}}>
+            return <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',borderRadius:8,background:`linear-gradient(135deg,${backCol}33 0%,#1a0533 55%,${backCol}22 100%)`,border:`2px solid ${backCol}`,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:`0 2px 8px rgba(0,0,0,0.3),inset 0 0 14px ${backCol}33${isHigh?',0 0 12px '+backCol+'88':''}`,overflow:'hidden',position:'relative'}}>
               {/* 高レア背景: 放射状 */}
               {isHigh&&<div style={{position:'absolute',inset:0,background:`radial-gradient(circle at center, ${backCol}33 0%, transparent 70%)`,pointerEvents:'none'}}/>}
               {/* レアラベル（左上） */}
               <div style={{position:'absolute',top:2,left:3,fontSize:7,fontWeight:900,color:backCol,opacity:0.85,letterSpacing:0.5,textShadow:`0 0 4px ${backCol}`,zIndex:2}}>{ic.label}</div>
-              {/* 中心アイコン（サイズ統一） */}
-              <div style={{fontSize:22,color:backCol,opacity:0.95,textShadow:`0 0 ${isHigh?10:8}px ${backCol},0 0 ${isHigh?18:14}px ${backCol}88`,zIndex:1,animation:isHigh?'pulse 1.4s ease-in-out infinite':'none'}}>{ic.icon}</div>
-              {/* SR/UR/LR: サブアイコン */}
-              {(isMid||isHigh)&&<div style={{fontSize:6,color:backCol,opacity:0.7,marginTop:1,letterSpacing:1,zIndex:1}}>{ic.sub}</div>}
+              {/* 中心アイコンのみ（サブ装飾は廃止してサイズを揃える） */}
+              <div style={{fontSize:32,color:backCol,opacity:0.95,textShadow:`0 0 ${isHigh?12:8}px ${backCol},0 0 ${isHigh?20:14}px ${backCol}88`,zIndex:1,lineHeight:1,animation:isHigh?'pulse 1.4s ease-in-out infinite':'none'}}>{ic.icon}</div>
             </div>;})()}
             {/* 表面 */}
             <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',borderRadius:8,transform:'rotateY(180deg)',background:kind==='monster'?`linear-gradient(135deg,${MONS[r.type]?.bg||col}44,${col}22)`:`linear-gradient(135deg,${col}33,${col}11)`,border:`2px solid ${col}`,boxShadow:`0 0 10px ${col}77,inset 0 0 8px ${col}33`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:4,overflow:'hidden'}}>
