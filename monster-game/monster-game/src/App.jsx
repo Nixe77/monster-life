@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v1.9.1"; // 金色復活+回転中の裏面強制非表示+単発カードサイズ修正
+const APP_VERSION = "v1.9.2"; // 黒い裏当てレイヤー追加+IIFE解除でビルドエラー修正
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -3538,6 +3538,9 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
     ):null;
     // LRかつ昇格演出 → 虹色オーラ等の追加エフェクトを有効化
     const isLRPromote=isLR&&promoteSeq;
+    // 回転角度から見える面を判定（裏側が見えないようopacity強制制御）
+    const rotMod=((zoomRotation%360)+360)%360;
+    const isFaceASide=rotMod<90||rotMod>270;
     return <div onClick={closeZoom} style={{position:'fixed',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:14,cursor:zoomFlipped?'pointer':'default',background:`radial-gradient(circle at center, ${bc}55 0%, rgba(10,2,25,0.97) 60%)`,backdropFilter:'blur(8px)',animation:'fadeIn 0.35s ease-out',zIndex:50,padding:14,transition:'background 0.7s',overflow:'hidden'}}>
       {/* LR専用: 虹色背景オーラ */}
       {isLRPromote&&<div style={{position:'absolute',inset:0,pointerEvents:'none',background:'conic-gradient(from 0deg, #ff5b89, #ff9800, #ffd700, #66bb6a, #42a5f5, #bf88ff, #ff5b89)',animation:'rotate 6s linear infinite',opacity:0.18,mixBlendMode:'screen'}}/>}
@@ -3563,11 +3566,9 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
 
       {/* 拡大カード（absolute中央配置でflexから切り離し、サイズを完全固定） */}
       <div style={{position:'absolute',top:'50%',left:'50%',marginLeft:-110,marginTop:-165,width:220,height:330,perspective:'1000px',animation:'zoomInCard 0.55s cubic-bezier(0.34,1.56,0.64,1)',zIndex:2}}>
-        {(()=>{
-          // 回転角度から見える面を判定（裏側が見えないようopacity強制制御）
-          const rotMod=((zoomRotation%360)+360)%360; // 0-360正規化
-          const isFaceASide=rotMod<90||rotMod>270; // faceA が正面側にある角度範囲
-          return <div style={{position:'absolute',inset:0,transformStyle:'preserve-3d',transition:'transform 0.7s cubic-bezier(0.34,1.56,0.64,1)',transform:`rotateY(${zoomRotation}deg)`}}>
+        <div style={{position:'absolute',inset:0,transformStyle:'preserve-3d',transition:'transform 0.7s cubic-bezier(0.34,1.56,0.64,1)',transform:`rotateY(${zoomRotation}deg)`}}>
+          {/* 永続表示の黒い裏当て（フリップ中・裏側で見える際に真っ黒にする） */}
+          <div style={{position:'absolute',inset:0,background:'#000',borderRadius:14,border:'3px solid #1a0533'}}/>
           {/* 表側面 (faceA) - 偶数段階で表示、最終段階のrotation%360===0なら表面 */}
           <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',WebkitBackfaceVisibility:'hidden',transform:'translateZ(1px)',borderRadius:14,overflow:'hidden',background:'#0a0014',opacity:isFaceASide?1:0,transition:'opacity 0.1s linear'}}>
             {zoomFlipped&&(zoomRotation%360===0)?(
@@ -3612,8 +3613,7 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
               </div>
             )}
           </div>
-        </div>;
-        })()}
+        </div>
       </div>
       {zoomFlipped&&<div style={{fontSize:11,opacity:0.6,zIndex:2}}>タップで続ける →</div>}
     </div>;
