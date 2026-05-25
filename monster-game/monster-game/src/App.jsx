@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v1.9.2"; // 黒い裏当てレイヤー追加+IIFE解除でビルドエラー修正
+const APP_VERSION = "v1.9.3"; // 中間ゾーン強制非表示+タップ待機+キャラ拡大(110→150)
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -3353,6 +3353,8 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
   const [zoomIdx,setZoomIdx]=useState(null);
   // 全めくり終了済みか
   const [done,setDone]=useState(false);
+  // 全カードめくり完了後、ユーザーのタップでリザルトに遷移するための待機状態
+  const [awaitTap,setAwaitTap]=useState(false);
   // めくり速度
   const flipInterval=kind==='monster'?420:200;
   // 累積カウンタ
@@ -3382,10 +3384,10 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
 
   // 自動めくり
   useEffect(()=>{
-    if(zoomIdx!==null||done)return;
+    if(zoomIdx!==null||done||awaitTap)return;
     timerRef.current=setTimeout(()=>{
       const i=nextIdxRef.current;
-      if(i>=results.length){setDone(true);return;}
+      if(i>=results.length){setAwaitTap(true);return;} // 全めくり完了 → タップ待ち
       const r=results[i];
       // ズーム発動条件: 新規 OR LR OR 昇格対象（SR以上の60%）
       const hasPromote=!!promoteSeqRef.current?.[i];
@@ -3398,7 +3400,7 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
       nextIdxRef.current=i+1;
     },flipInterval);
     return()=>clearTimeout(timerRef.current);
-  },[flipped,zoomIdx,done]);
+  },[flipped,zoomIdx,done,awaitTap]);
 
   // ズームイン演出: 多段階フリップ進行
   // zoomStage: 現在の段階番号（0始まり）
@@ -3478,10 +3480,10 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
       }
     }
     if(stopIdx===-1){
-      // 残りに止めたいカードがない → 全てめくって終了
+      // 残りに止めたいカードがない → 全てめくって終了（タップ待ちに遷移）
       setFlipped(results.map(()=>true));
       nextIdxRef.current=results.length;
-      setDone(true);
+      setAwaitTap(true);
       setSkipping(false);
     }else{
       // stopIdx の手前まで一気にめくる、stopIdx でズーム発動
@@ -3541,6 +3543,8 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
     // 回転角度から見える面を判定（裏側が見えないようopacity強制制御）
     const rotMod=((zoomRotation%360)+360)%360;
     const isFaceASide=rotMod<90||rotMod>270;
+    // フリップ中間ゾーン（80-100, 260-280度）では両面を非表示にして黒い裏当てだけ見せる
+    const inFlipZone=(rotMod>80&&rotMod<100)||(rotMod>260&&rotMod<280);
     return <div onClick={closeZoom} style={{position:'fixed',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:14,cursor:zoomFlipped?'pointer':'default',background:`radial-gradient(circle at center, ${bc}55 0%, rgba(10,2,25,0.97) 60%)`,backdropFilter:'blur(8px)',animation:'fadeIn 0.35s ease-out',zIndex:50,padding:14,transition:'background 0.7s',overflow:'hidden'}}>
       {/* LR専用: 虹色背景オーラ */}
       {isLRPromote&&<div style={{position:'absolute',inset:0,pointerEvents:'none',background:'conic-gradient(from 0deg, #ff5b89, #ff9800, #ffd700, #66bb6a, #42a5f5, #bf88ff, #ff5b89)',animation:'rotate 6s linear infinite',opacity:0.18,mixBlendMode:'screen'}}/>}
@@ -3570,12 +3574,12 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
           {/* 永続表示の黒い裏当て（フリップ中・裏側で見える際に真っ黒にする） */}
           <div style={{position:'absolute',inset:0,background:'#000',borderRadius:14,border:'3px solid #1a0533'}}/>
           {/* 表側面 (faceA) - 偶数段階で表示、最終段階のrotation%360===0なら表面 */}
-          <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',WebkitBackfaceVisibility:'hidden',transform:'translateZ(1px)',borderRadius:14,overflow:'hidden',background:'#0a0014',opacity:isFaceASide?1:0,transition:'opacity 0.1s linear'}}>
+          <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',WebkitBackfaceVisibility:'hidden',transform:'translateZ(1px)',borderRadius:14,overflow:'hidden',background:'#0a0014',opacity:inFlipZone?0:(isFaceASide?1:0),transition:'opacity 0s'}}>
             {zoomFlipped&&(zoomRotation%360===0)?(
               /* 表面コンテンツ (LR等の最終段階) */
-              <div style={{position:'absolute',inset:0,padding:'28px 20px',background:`linear-gradient(135deg,${mi.bg}66,rgba(255,255,255,0.04))`,border:`3px solid ${col}`,borderRadius:14,boxShadow:`0 0 36px ${col}cc, inset 0 0 18px ${col}33`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:8,overflow:'hidden'}}>
+              <div style={{position:'absolute',inset:0,padding:'14px 12px',background:`linear-gradient(135deg,${mi.bg}66,rgba(255,255,255,0.04))`,border:`3px solid ${col}`,borderRadius:14,boxShadow:`0 0 36px ${col}cc, inset 0 0 18px ${col}33`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:8,overflow:'hidden'}}>
                 {[0,1,2,3,4,5].map(i=><div key={i} style={{position:'absolute',top:`${15+Math.sin(i*1.7)*40}%`,left:`${10+Math.cos(i*2.1)*38}%`,fontSize:14,color:col,opacity:0.7,animation:`twinkle ${1.4+i*0.2}s ease-in-out infinite`}}>✦</div>)}
-                <MonsterSprite type={r.type} size={110} anim="float"/>
+                <MonsterSprite type={r.type} size={150} anim="float"/>
                 <div style={{fontSize:20,fontWeight:900,color:mi.color}}>{mi.name}</div>
                 <div style={{display:'flex',justifyContent:'center',gap:6,flexWrap:'wrap'}}>
                   <Pill label={r.rarity} color={col}/>
@@ -3593,12 +3597,12 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
             )}
           </div>
           {/* 裏側面 (faceB) - 奇数段階で表示、最終段階のrotation%360===180なら表面 */}
-          <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',WebkitBackfaceVisibility:'hidden',transform:'rotateY(180deg) translateZ(1px)',borderRadius:14,overflow:'hidden',background:'#0a0014',opacity:isFaceASide?0:1,transition:'opacity 0.1s linear'}}>
+          <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',WebkitBackfaceVisibility:'hidden',transform:'rotateY(180deg) translateZ(1px)',borderRadius:14,overflow:'hidden',background:'#0a0014',opacity:inFlipZone?0:(isFaceASide?0:1),transition:'opacity 0s'}}>
             {zoomFlipped&&(zoomRotation%360===180)?(
               /* 表面コンテンツ (UR等の最終段階) */
-              <div style={{position:'absolute',inset:0,padding:'28px 20px',background:`linear-gradient(135deg,${mi.bg}66,rgba(255,255,255,0.04))`,border:`3px solid ${col}`,borderRadius:14,boxShadow:`0 0 36px ${col}cc, inset 0 0 18px ${col}33`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:8,overflow:'hidden'}}>
+              <div style={{position:'absolute',inset:0,padding:'14px 12px',background:`linear-gradient(135deg,${mi.bg}66,rgba(255,255,255,0.04))`,border:`3px solid ${col}`,borderRadius:14,boxShadow:`0 0 36px ${col}cc, inset 0 0 18px ${col}33`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:8,overflow:'hidden'}}>
                 {[0,1,2,3,4,5].map(i=><div key={i} style={{position:'absolute',top:`${15+Math.sin(i*1.7)*40}%`,left:`${10+Math.cos(i*2.1)*38}%`,fontSize:14,color:col,opacity:0.7,animation:`twinkle ${1.4+i*0.2}s ease-in-out infinite`}}>✦</div>)}
-                <MonsterSprite type={r.type} size={110} anim="float"/>
+                <MonsterSprite type={r.type} size={150} anim="float"/>
                 <div style={{fontSize:20,fontWeight:900,color:mi.color}}>{mi.name}</div>
                 <div style={{display:'flex',justifyContent:'center',gap:6,flexWrap:'wrap'}}>
                   <Pill label={r.rarity} color={col}/>
@@ -3737,6 +3741,10 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
     </div>
     <button onClick={skipAll} disabled={zoomIdx!==null||skipping} style={{...FF,width:'100%',padding:'10px 0',borderRadius:11,border:'1px solid rgba(255,255,255,0.15)',background:skipping?'rgba(191,136,255,0.15)':'rgba(255,255,255,0.05)',color:skipping?'#bf88ff':'rgba(255,255,255,0.7)',cursor:zoomIdx!==null||skipping?'default':'pointer',fontSize:11,fontWeight:700}}>{skipping?'⏩ スキップ中…':'⏭ 演出スキップ'}</button>
     {renderZoomOverlay()}
+    {/* 全めくり完了 → タップ待ちオーバーレイ（自動でリザルトに飛ばないように） */}
+    {awaitTap&&zoomIdx===null&&<div onClick={()=>{setAwaitTap(false);setDone(true);}} style={{position:'fixed',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'flex-end',paddingBottom:80,cursor:'pointer',zIndex:40,background:'rgba(0,0,0,0)',animation:'fadeIn 0.4s ease-out'}}>
+      <div style={{...FF,padding:'14px 32px',borderRadius:24,background:'linear-gradient(135deg,#bf88ff,#ff9fcf)',color:'#fff',fontSize:14,fontWeight:900,boxShadow:'0 0 24px rgba(191,136,255,0.6),inset 0 0 12px rgba(255,255,255,0.2)',animation:'pulse 1.4s ease-in-out infinite',letterSpacing:1}}>👆 タップして結果へ</div>
+    </div>}
   </div>;
 }
 
