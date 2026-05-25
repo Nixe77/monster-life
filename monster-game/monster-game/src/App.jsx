@@ -3201,7 +3201,14 @@ function BagScreen({s,d,onUseNameplate}){
 
 // ─── COLLECTION SCREEN ───────────────────────────────────
 // ─── GACHA REVEAL（カードめくり演出） ───────────────────────
-function GachaReveal({kind,results,onDone}){
+// 裏面色を3段階に分類: 低レア(C,R) / 中レア(SR) / 高レア(UR,LR)
+function backColorOf(rarity){
+  if(rarity==='C'||rarity==='R')return '#6b8cae';      // 低レア: 銀青
+  if(rarity==='SR')return '#bf88ff';                    // 中レア: 紫
+  return '#ffd700';                                      // 高レア (UR, LR): 金
+}
+
+function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDisabled}){
   // kind: 'monster' | 'material'
   // flipped[i]: 各カードが裏返り済みか
   const [flipped,setFlipped]=useState(()=>results.map(()=>false));
@@ -3224,15 +3231,15 @@ function GachaReveal({kind,results,onDone}){
 
   if(promoteSeqRef.current===null){
     // 初期化: UR/LRカードの30%を昇格対象に選定（演出は引いた直後すでに表示される）
+    // 裏面色は3段階（低=銀青/中=紫/高=金）なので、パスも3段階で構成
     const seq=results.map(r=>{
       if(kind!=='monster')return null; // 素材ガチャは昇格演出なし
       const idx=RO.indexOf(r.rarity);
       if(idx<3)return null; // C/R/SRは昇格演出なし（最初からその色で表示）
       if(Math.random()>=0.30)return null; // 70%は通常表示
-      // 昇格演出: Cから順に上がる
-      const path=[];
-      for(let j=0;j<=idx;j++)path.push(RO[j]);
-      return path;
+      // 昇格演出: 低レア(C) → 中レア(SR) → 高レア(UR/LR) の3段階
+      // 表示色は backColorOf() で 3段階に正規化される
+      return ['C','SR',r.rarity];
     });
     promoteSeqRef.current=seq;
   }
@@ -3260,7 +3267,7 @@ function GachaReveal({kind,results,onDone}){
         });
         return a;
       });
-    },350);
+    },500);
     return()=>clearTimeout(tid);
   },[promoteStage,flipped,zoomIdx,done]);
 
@@ -3320,7 +3327,7 @@ function GachaReveal({kind,results,onDone}){
   function renderZoomOverlay(){
     if(zoomIdx===null||kind!=='monster')return null;
     const r=results[zoomIdx];const mi=MONS[r.type];const col=RC[r.rarity]||'#fff';
-    return <div onClick={closeZoom} style={{position:'fixed',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:14,cursor:zoomFlipped?'pointer':'default',background:`radial-gradient(circle at center, ${col}33 0%, rgba(20,5,45,0.85) 70%)`,animation:'fadeIn 0.35s ease-out',zIndex:50,padding:14}}>
+    return <div onClick={closeZoom} style={{position:'fixed',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:14,cursor:zoomFlipped?'pointer':'default',background:`radial-gradient(circle at center, ${col}66 0%, rgba(10,2,25,0.97) 60%)`,backdropFilter:'blur(8px)',animation:'fadeIn 0.35s ease-out',zIndex:50,padding:14}}>
       {/* 放射状の光（フリップ後のみ表示） */}
       {zoomFlipped&&<div style={{position:'absolute',inset:0,pointerEvents:'none',background:`conic-gradient(from 0deg, transparent 0deg, ${col}44 10deg, transparent 20deg, transparent 40deg, ${col}33 50deg, transparent 60deg, transparent 90deg, ${col}55 100deg, transparent 110deg, transparent 140deg, ${col}33 150deg, transparent 160deg, transparent 180deg, ${col}44 190deg, transparent 200deg, transparent 230deg, ${col}33 240deg, transparent 250deg, transparent 280deg, ${col}55 290deg, transparent 300deg, transparent 330deg, ${col}44 340deg, transparent 350deg)`,animation:'rotate 8s linear infinite',opacity:0.55}}/>}
       {/* NEW バナー（フリップ後に表示） */}
@@ -3329,10 +3336,11 @@ function GachaReveal({kind,results,onDone}){
       {/* 拡大カード（裏→表のフリップを内側で再現） */}
       <div style={{width:260,maxWidth:'82vw',aspectRatio:'2/3',perspective:'1000px',position:'relative',animation:'zoomInCard 0.55s cubic-bezier(0.34,1.56,0.64,1)',zIndex:2}}>
         <div style={{position:'absolute',inset:0,transformStyle:'preserve-3d',transition:'transform 0.7s cubic-bezier(0.34,1.56,0.64,1)',transform:zoomFlipped?'rotateY(180deg)':'rotateY(0deg)'}}>
-          {/* 裏面（拡大版・本来のレア色） */}
-          <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',borderRadius:14,background:`linear-gradient(135deg,${col}44 0%,#1a0533 50%,${col}33 100%)`,border:`3px solid ${col}`,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:`0 0 30px ${col}aa,inset 0 0 24px ${col}55`}}>
-            <div style={{fontSize:80,color:col,opacity:0.8,animation:'pulse 1.4s ease-in-out infinite',textShadow:`0 0 18px ${col}`}}>✦</div>
-          </div>
+          {/* 裏面（拡大版・3段階の裏色） */}
+          {(()=>{const bc=backColorOf(r.rarity);return(
+          <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',borderRadius:14,background:`linear-gradient(135deg,${bc}44 0%,#1a0533 50%,${bc}33 100%)`,border:`3px solid ${bc}`,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:`0 0 30px ${bc}aa,inset 0 0 24px ${bc}55`}}>
+            <div style={{fontSize:80,color:bc,opacity:0.85,animation:'pulse 1.4s ease-in-out infinite',textShadow:`0 0 18px ${bc}`}}>✦</div>
+          </div>);})()}
           {/* 表面（拡大版） */}
           <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',transform:'rotateY(180deg)',borderRadius:14,padding:'28px 20px',background:`linear-gradient(135deg,${mi.bg}66,rgba(255,255,255,0.04))`,border:`3px solid ${col}`,boxShadow:`0 0 36px ${col}cc, inset 0 0 18px ${col}33`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:8,position:'relative',overflow:'hidden'}}>
             {/* キラ星 */}
@@ -3373,7 +3381,10 @@ function GachaReveal({kind,results,onDone}){
             {lbCount>0&&<div style={{background:'rgba(255,152,0,0.15)',border:'1px solid #ff9800',borderRadius:10,padding:'5px 12px',fontSize:11,fontWeight:900,color:'#ff9800'}}>⭐ 限界突破 ×{lbCount}</div>}
           </div>
         </div>
-        <Btn onClick={onDone} color='linear-gradient(135deg,#bf88ff,#ff6b9d)'>✨ 結果を確認した</Btn>
+        <div style={{display:'grid',gridTemplateColumns:onPullAgain?'1fr 1fr':'1fr',gap:8}}>
+          {onPullAgain&&<Btn onClick={onPullAgain} disabled={pullAgainDisabled} color={pullAgainDisabled?'rgba(255,255,255,0.08)':'linear-gradient(135deg,#bf40ff,#7c3aed)'}>{pullAgainLabel||'🎲 もう1回'}</Btn>}
+          <Btn onClick={onDone} color='linear-gradient(135deg,#bf88ff,#ff6b9d)'>✨ 確認</Btn>
+        </div>
       </div>;
     }else{
       // 素材集計
@@ -3397,7 +3408,10 @@ function GachaReveal({kind,results,onDone}){
             <div style={{display:'inline-block',background:'rgba(255,215,0,0.15)',border:'1px solid #ffd700',borderRadius:10,padding:'5px 12px',fontSize:11,fontWeight:900,color:'#ffd700'}}>🌟 高レア ×{jackpot}</div>
           </div>}
         </div>
-        <Btn onClick={onDone} color='linear-gradient(135deg,#ffd700,#ff9800)' text='#1a0533'>✨ 結果を確認した</Btn>
+        <div style={{display:'grid',gridTemplateColumns:onPullAgain?'1fr 1fr':'1fr',gap:8}}>
+          {onPullAgain&&<Btn onClick={onPullAgain} disabled={pullAgainDisabled} color={pullAgainDisabled?'rgba(255,255,255,0.08)':'linear-gradient(135deg,#ffd700,#ff9800)'} text='#1a0533'>{pullAgainLabel||'🎲 もう1回'}</Btn>}
+          <Btn onClick={onDone} color='linear-gradient(135deg,#ffd700,#ff9800)' text='#1a0533'>✨ 確認</Btn>
+        </div>
       </div>;
     }
   }
@@ -3416,7 +3430,7 @@ function GachaReveal({kind,results,onDone}){
         const flippedI=flipped[i];
         // 現在表示すべき裏面色: 昇格演出中なら段階に応じた色、それ以外は本来の色
         const backRar=(promoteSeqRef.current?.[i]?.[promoteStage[i]])||r.rarity;
-        const backCol=RC[backRar]||'#fff';
+        const backCol=backColorOf(backRar);
         // 昇格中のカードはやや派手なエフェクト
         const isPromoting=promoteSeqRef.current?.[i]&&promoteStage[i]>0&&!flippedI;
         // ズーム対象は元位置で非表示にする
@@ -3459,12 +3473,30 @@ function GachaScreen({s,d}){
 
   // モンスターガチャ結果表示 → カードめくり演出
   if(gr){
-    return <GachaReveal kind='monster' results={gr.results} onDone={()=>d({type:'GACHA_DONE'})}/>;
+    const n=gr.results.length;
+    const cost=n===10?900:100;
+    const canAfford=s.coins>=cost;
+    return <GachaReveal kind='monster' results={gr.results}
+      onDone={()=>d({type:'GACHA_DONE'})}
+      onPullAgain={canAfford?()=>{d({type:'GACHA_DONE'});setTimeout(()=>d({type:'GACHA',n}),60);}:null}
+      pullAgainLabel={`🎲 もう1回 (${n===10?'10連 900G':'1回 100G'})`}
+      pullAgainDisabled={!canAfford}
+    />;
   }
 
   // 素材ガチャ結果表示 → カードめくり演出（速め、初取得演出なし）
   if(mgr){
-    return <GachaReveal kind='material' results={mgr.results} onDone={()=>d({type:'MAT_GACHA_DONE'})}/>;
+    const n=mgr.results.length;
+    const bzLv=s.facilities.bazaar?.lv||0;
+    const matDisc=Math.min(0.20,bzLv*0.022);
+    const cost=n===10?Math.floor(2700*(1-matDisc)):Math.floor(300*(1-matDisc));
+    const canAfford=s.coins>=cost;
+    return <GachaReveal kind='material' results={mgr.results}
+      onDone={()=>d({type:'MAT_GACHA_DONE'})}
+      onPullAgain={canAfford?()=>{d({type:'MAT_GACHA_DONE'});setTimeout(()=>d({type:'MATERIAL_GACHA',n}),60);}:null}
+      pullAgainLabel={`🎲 もう1回 (${n===10?'10連 '+cost+'G':'1回 '+cost+'G'})`}
+      pullAgainDisabled={!canAfford}
+    />;
   }
 
   // 確率計算
