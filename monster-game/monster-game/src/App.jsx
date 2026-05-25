@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v1.8.0"; // 裏面レア識別デザイン+スキップでLR/昇格止める
+const APP_VERSION = "v1.8.1"; // 裏面3種類統一+スキップ文言整理+設定グローバル化
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -3122,17 +3122,14 @@ function BagScreen({s,d,onUseNameplate}){
   const [tab,setTab]=useState('mat');
   const [equipSel,setEquipSel]=useState(null);
   const [equipPreview,setEquipPreview]=useState(null); // 装備差分プレビュー対象のID
-  const [showSettings,setShowSettings]=useState(false);
   const pm=s.monsters.find(m=>m.id===s.party.main)||s.monsters[0];
   const SLOTS=[['hat','頭🎩'],['acc','首💎'],['wpn','手⚔']];
   return <div style={{width:'100%',padding:14,animation:'fadeIn 0.4s ease-out'}}>
     <div style={{...CARD,marginBottom:12}}>
       <div style={{display:'flex',gap:5,alignItems:'center'}}>
         {[['mat','🎒 素材'],['equip','⚔ 装備'],['fuse','⚗ 合成']].map(([k,l])=><button key={k} onClick={()=>setTab(k)} style={{...FF,flex:1,padding:'7px 0',borderRadius:12,border:'none',fontWeight:700,fontSize:11,cursor:'pointer',background:tab===k?'rgba(191,136,255,0.3)':'rgba(255,255,255,0.06)',color:tab===k?'#bf88ff':'rgba(255,255,255,0.45)'}}>{l}</button>)}
-        <button onClick={()=>setShowSettings(true)} title="設定" style={{...FF,padding:'7px 12px',borderRadius:12,border:'1px solid rgba(255,255,255,0.15)',background:'rgba(255,255,255,0.06)',color:'rgba(255,255,255,0.7)',cursor:'pointer',fontWeight:700,fontSize:13}}>⚙</button>
       </div>
     </div>
-    {showSettings&&<SettingsModal s={s} d={d} onClose={()=>setShowSettings(false)}/>}
     {tab==='mat'&&<div>
       <div style={{fontSize:11,opacity:0.6,marginBottom:8}}>所持素材</div>
       {/* EXP items */}
@@ -3329,20 +3326,23 @@ function BagScreen({s,d,onUseNameplate}){
 
 // ─── COLLECTION SCREEN ───────────────────────────────────
 // ─── GACHA REVEAL（カードめくり演出） ───────────────────────
-// 裏面色を4段階に分類: 低レア(C,R) / 中レア(SR) / 高レア(UR) / 伝説(LR)
+// 裏面色を3段階に分類: 低レア(C,R) / 中レア(SR) / 高レア(UR,LR)
 function backColorOf(rarity){
   if(rarity==='C'||rarity==='R')return '#6b8cae';      // 低レア: 銀青
   if(rarity==='SR')return '#bf88ff';                    // 中レア: 紫
-  if(rarity==='UR')return '#ffd700';                    // 高レア: 金
-  return '#ff5b89';                                      // 伝説 (LR): 鮮やかピンク
+  return '#ffd700';                                      // 高レア (UR, LR): 金
 }
-// 裏面の中心アイコン・ラベルをレアごとに変える（一目で識別できるように）
+// 裏面アイコンも3グループで統一（見分けやすさ重視）
 function backIconOf(rarity){
-  if(rarity==='C')return {icon:'·',label:'??',sub:''};
-  if(rarity==='R')return {icon:'✦',label:'?',sub:''};
-  if(rarity==='SR')return {icon:'✧',label:'SR?',sub:'⋆ ⋆ ⋆'};
-  if(rarity==='UR')return {icon:'★',label:'UR?',sub:'✧ ★ ✧'};
-  return {icon:'♛',label:'LR!!',sub:'✦ ♛ ✦'}; // LR
+  if(rarity==='C'||rarity==='R')return {icon:'✦',label:'?',sub:''};       // 低: シンプル
+  if(rarity==='SR')return {icon:'✧',label:'?!',sub:'⋆ ⋆ ⋆'};               // 中: 三つ星
+  return {icon:'♛',label:'!!',sub:'✦ ★ ✦'};                                // 高: 王冠
+}
+// 3段階のグループ判定
+function rarityGroup(rarity){
+  if(rarity==='C'||rarity==='R')return 'low';
+  if(rarity==='SR')return 'mid';
+  return 'high'; // UR/LR共通
 }
 
 function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDisabled}){
@@ -3579,20 +3579,19 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
                 </div>
               </div>
             ):(
-              /* 裏面 A (色 = rarA) */
-              (()=>{const icA=backIconOf(rarA);const isURA=rarA==='UR';const isLRA=rarA==='LR';const isSRA=rarA==='SR';
-              return <div style={{position:'absolute',inset:0,borderRadius:14,background:isLRA?`linear-gradient(135deg,${bcA}55 0%,#3a0a1f 30%,#1a0533 55%,#3a0a1f 80%,${bcA}44 100%)`:`linear-gradient(135deg,${bcA}44 0%,#1a0533 50%,${bcA}33 100%)`,border:`3px solid ${bcA}`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',boxShadow:`0 0 30px ${bcA}aa,inset 0 0 24px ${bcA}55`,overflow:'hidden',position:'relative'}}>
-                {/* レア背景パターン */}
-                {isURA&&<div style={{position:'absolute',inset:0,background:`radial-gradient(circle at center, ${bcA}44 0%, transparent 70%)`,pointerEvents:'none'}}/>}
-                {isLRA&&<div style={{position:'absolute',inset:0,background:'conic-gradient(from 0deg, #ff5b8966, #ffd70066, #66bb6a66, #42a5f566, #bf88ff66, #ff5b8966)',animation:'rotate 6s linear infinite',opacity:0.5,pointerEvents:'none'}}/>}
+              /* 裏面 A (3グループ識別) */
+              (()=>{const icA=backIconOf(rarA);const grpA=rarityGroup(rarA);const isHighA=grpA==='high';const isMidA=grpA==='mid';
+              return <div style={{position:'absolute',inset:0,borderRadius:14,background:`linear-gradient(135deg,${bcA}44 0%,#1a0533 50%,${bcA}33 100%)`,border:`3px solid ${bcA}`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',boxShadow:`0 0 30px ${bcA}aa,inset 0 0 24px ${bcA}55`,overflow:'hidden',position:'relative'}}>
+                {/* 高レア背景: 放射状 */}
+                {isHighA&&<div style={{position:'absolute',inset:0,background:`radial-gradient(circle at center, ${bcA}44 0%, transparent 70%)`,pointerEvents:'none'}}/>}
                 {/* 角のレアラベル */}
                 <div style={{position:'absolute',top:8,left:10,fontSize:14,fontWeight:900,color:bcA,letterSpacing:1,textShadow:`0 0 8px ${bcA}`,zIndex:2}}>{icA.label}</div>
                 <div style={{position:'absolute',bottom:8,right:10,fontSize:14,fontWeight:900,color:bcA,letterSpacing:1,textShadow:`0 0 8px ${bcA}`,zIndex:2,transform:'rotate(180deg)'}}>{icA.label}</div>
                 {/* キラ星 */}
                 {[0,1,2,3,4,5,6,7].map(k=><div key={k} style={{position:'absolute',top:`${10+Math.sin(k*1.9)*42}%`,left:`${8+Math.cos(k*2.3)*42}%`,fontSize:10+(k%3)*3,color:bcA,opacity:0.6,animation:`twinkle ${1.2+k*0.18}s ease-in-out infinite`,textShadow:`0 0 6px ${bcA}`}}>✦</div>)}
-                {/* 中心アイコン */}
-                <div style={{fontSize:isLRA?95:isURA?88:80,color:bcA,opacity:0.95,animation:'pulse 1.0s ease-in-out infinite',textShadow:`0 0 28px ${bcA},0 0 56px ${bcA}aa`,zIndex:1}}>{icA.icon}</div>
-                {(isSRA||isURA||isLRA)&&<div style={{fontSize:14,color:bcA,opacity:0.8,marginTop:4,letterSpacing:6,textShadow:`0 0 8px ${bcA}`,zIndex:1}}>{icA.sub}</div>}
+                {/* 中心アイコン（サイズ統一: 80px） */}
+                <div style={{fontSize:80,color:bcA,opacity:0.95,animation:'pulse 1.0s ease-in-out infinite',textShadow:`0 0 28px ${bcA},0 0 56px ${bcA}aa`,zIndex:1}}>{icA.icon}</div>
+                {(isMidA||isHighA)&&<div style={{fontSize:14,color:bcA,opacity:0.8,marginTop:4,letterSpacing:6,textShadow:`0 0 8px ${bcA}`,zIndex:1}}>{icA.sub}</div>}
               </div>;})()
             )}
           </div>
@@ -3610,16 +3609,15 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
                 </div>
               </div>
             ):(
-              /* 裏面 B (色 = rarB) */
-              (()=>{const icB=backIconOf(rarB);const isURB=rarB==='UR';const isLRB=rarB==='LR';const isSRB=rarB==='SR';
-              return <div style={{position:'absolute',inset:0,borderRadius:14,background:isLRB?`linear-gradient(135deg,${bcB}55 0%,#3a0a1f 30%,#1a0533 55%,#3a0a1f 80%,${bcB}44 100%)`:`linear-gradient(135deg,${bcB}44 0%,#1a0533 50%,${bcB}33 100%)`,border:`3px solid ${bcB}`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',boxShadow:`0 0 30px ${bcB}aa,inset 0 0 24px ${bcB}55`,overflow:'hidden',position:'relative'}}>
-                {isURB&&<div style={{position:'absolute',inset:0,background:`radial-gradient(circle at center, ${bcB}44 0%, transparent 70%)`,pointerEvents:'none'}}/>}
-                {isLRB&&<div style={{position:'absolute',inset:0,background:'conic-gradient(from 0deg, #ff5b8966, #ffd70066, #66bb6a66, #42a5f566, #bf88ff66, #ff5b8966)',animation:'rotate 6s linear infinite',opacity:0.5,pointerEvents:'none'}}/>}
+              /* 裏面 B (3グループ識別) */
+              (()=>{const icB=backIconOf(rarB);const grpB=rarityGroup(rarB);const isHighB=grpB==='high';const isMidB=grpB==='mid';
+              return <div style={{position:'absolute',inset:0,borderRadius:14,background:`linear-gradient(135deg,${bcB}44 0%,#1a0533 50%,${bcB}33 100%)`,border:`3px solid ${bcB}`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',boxShadow:`0 0 30px ${bcB}aa,inset 0 0 24px ${bcB}55`,overflow:'hidden',position:'relative'}}>
+                {isHighB&&<div style={{position:'absolute',inset:0,background:`radial-gradient(circle at center, ${bcB}44 0%, transparent 70%)`,pointerEvents:'none'}}/>}
                 <div style={{position:'absolute',top:8,left:10,fontSize:14,fontWeight:900,color:bcB,letterSpacing:1,textShadow:`0 0 8px ${bcB}`,zIndex:2}}>{icB.label}</div>
                 <div style={{position:'absolute',bottom:8,right:10,fontSize:14,fontWeight:900,color:bcB,letterSpacing:1,textShadow:`0 0 8px ${bcB}`,zIndex:2,transform:'rotate(180deg)'}}>{icB.label}</div>
                 {[0,1,2,3,4,5,6,7].map(k=><div key={k} style={{position:'absolute',top:`${10+Math.sin(k*1.9)*42}%`,left:`${8+Math.cos(k*2.3)*42}%`,fontSize:10+(k%3)*3,color:bcB,opacity:0.6,animation:`twinkle ${1.2+k*0.18}s ease-in-out infinite`,textShadow:`0 0 6px ${bcB}`}}>✦</div>)}
-                <div style={{fontSize:isLRB?95:isURB?88:80,color:bcB,opacity:0.95,animation:'pulse 1.0s ease-in-out infinite',textShadow:`0 0 28px ${bcB},0 0 56px ${bcB}aa`,zIndex:1}}>{icB.icon}</div>
-                {(isSRB||isURB||isLRB)&&<div style={{fontSize:14,color:bcB,opacity:0.8,marginTop:4,letterSpacing:6,textShadow:`0 0 8px ${bcB}`,zIndex:1}}>{icB.sub}</div>}
+                <div style={{fontSize:80,color:bcB,opacity:0.95,animation:'pulse 1.0s ease-in-out infinite',textShadow:`0 0 28px ${bcB},0 0 56px ${bcB}aa`,zIndex:1}}>{icB.icon}</div>
+                {(isMidB||isHighB)&&<div style={{fontSize:14,color:bcB,opacity:0.8,marginTop:4,letterSpacing:6,textShadow:`0 0 8px ${bcB}`,zIndex:1}}>{icB.sub}</div>}
               </div>;})()
             )}
           </div>
@@ -3726,22 +3724,20 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
         const isZoomTarget=zoomIdx===i;
         return <div key={i} style={{aspectRatio:'2/3',perspective:'600px',position:'relative',opacity:isZoomTarget?0.15:1,transition:'opacity 0.4s'}}>
           <div style={{position:'absolute',inset:0,transformStyle:'preserve-3d',transition:'transform 0.55s cubic-bezier(0.34,1.56,0.64,1)',transform:flippedI?'rotateY(180deg)':'rotateY(0deg)'}}>
-            {/* 裏面（レア色反映＋識別アイコン） */}
+            {/* 裏面（3グループ識別: 低=銀青/中=紫/高=金） */}
             {(()=>{const ic=backIconOf(backRar);
-            // レア専用の追加装飾
-            const isUR=backRar==='UR';
-            const isLR=backRar==='LR';
-            const isSR=backRar==='SR';
-            return <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',borderRadius:8,background:isLR?`linear-gradient(135deg,${backCol}44 0%,#3a0a1f 30%,#1a0533 55%,#3a0a1f 80%,${backCol}33 100%)`:`linear-gradient(135deg,${backCol}33 0%,#1a0533 55%,${backCol}22 100%)`,border:`${isLR?2:isUR?1.8:1.5}px solid ${backCol}${isLR?'':'aa'}`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',boxShadow:`0 2px 8px rgba(0,0,0,0.3),inset 0 0 14px ${backCol}${isLR?'66':'33'}${isUR||isLR?',0 0 12px '+backCol+'88':''}`,overflow:'hidden',position:'relative'}}>
-              {/* レア背景パターン */}
-              {isUR&&<div style={{position:'absolute',inset:0,background:`radial-gradient(circle at center, ${backCol}33 0%, transparent 70%)`,pointerEvents:'none'}}/>}
-              {isLR&&<div style={{position:'absolute',inset:0,background:'conic-gradient(from 0deg, #ff5b8944, #ffd70044, #66bb6a44, #42a5f544, #bf88ff44, #ff5b8944)',animation:'rotate 8s linear infinite',opacity:0.45,pointerEvents:'none'}}/>}
+            const grp=rarityGroup(backRar);
+            const isHigh=grp==='high';
+            const isMid=grp==='mid';
+            return <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',borderRadius:8,background:`linear-gradient(135deg,${backCol}33 0%,#1a0533 55%,${backCol}22 100%)`,border:`${isHigh?1.8:1.5}px solid ${backCol}${isHigh?'':'aa'}`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',boxShadow:`0 2px 8px rgba(0,0,0,0.3),inset 0 0 14px ${backCol}33${isHigh?',0 0 12px '+backCol+'88':''}`,overflow:'hidden',position:'relative'}}>
+              {/* 高レア背景: 放射状 */}
+              {isHigh&&<div style={{position:'absolute',inset:0,background:`radial-gradient(circle at center, ${backCol}33 0%, transparent 70%)`,pointerEvents:'none'}}/>}
               {/* レアラベル（左上） */}
               <div style={{position:'absolute',top:2,left:3,fontSize:7,fontWeight:900,color:backCol,opacity:0.85,letterSpacing:0.5,textShadow:`0 0 4px ${backCol}`,zIndex:2}}>{ic.label}</div>
-              {/* 中心アイコン */}
-              <div style={{fontSize:isLR?26:isUR?24:22,color:backCol,opacity:0.95,textShadow:`0 0 ${isLR?12:isUR?10:8}px ${backCol},0 0 ${isLR?22:isUR?18:14}px ${backCol}88`,zIndex:1,animation:isLR?'pulse 1s ease-in-out infinite':isUR?'pulse 1.4s ease-in-out infinite':'none'}}>{ic.icon}</div>
+              {/* 中心アイコン（サイズ統一） */}
+              <div style={{fontSize:22,color:backCol,opacity:0.95,textShadow:`0 0 ${isHigh?10:8}px ${backCol},0 0 ${isHigh?18:14}px ${backCol}88`,zIndex:1,animation:isHigh?'pulse 1.4s ease-in-out infinite':'none'}}>{ic.icon}</div>
               {/* SR/UR/LR: サブアイコン */}
-              {(isSR||isUR||isLR)&&<div style={{fontSize:6,color:backCol,opacity:0.7,marginTop:1,letterSpacing:1,zIndex:1}}>{ic.sub}</div>}
+              {(isMid||isHigh)&&<div style={{fontSize:6,color:backCol,opacity:0.7,marginTop:1,letterSpacing:1,zIndex:1}}>{ic.sub}</div>}
             </div>;})()}
             {/* 表面 */}
             <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',borderRadius:8,transform:'rotateY(180deg)',background:kind==='monster'?`linear-gradient(135deg,${MONS[r.type]?.bg||col}44,${col}22)`:`linear-gradient(135deg,${col}33,${col}11)`,border:`2px solid ${col}`,boxShadow:`0 0 10px ${col}77,inset 0 0 8px ${col}33`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:4,overflow:'hidden'}}>
@@ -3758,7 +3754,7 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
         </div>;
       })}
     </div>
-    <button onClick={skipAll} disabled={zoomIdx!==null||skipping} style={{...FF,width:'100%',padding:'10px 0',borderRadius:11,border:'1px solid rgba(255,255,255,0.15)',background:skipping?'rgba(191,136,255,0.15)':'rgba(255,255,255,0.05)',color:skipping?'#bf88ff':'rgba(255,255,255,0.7)',cursor:zoomIdx!==null||skipping?'default':'pointer',fontSize:11,fontWeight:700}}>{skipping?'⏩ スキップ中…（LR/昇格は停止）':'⏭ 演出スキップ（LR/昇格は見る）'}</button>
+    <button onClick={skipAll} disabled={zoomIdx!==null||skipping} style={{...FF,width:'100%',padding:'10px 0',borderRadius:11,border:'1px solid rgba(255,255,255,0.15)',background:skipping?'rgba(191,136,255,0.15)':'rgba(255,255,255,0.05)',color:skipping?'#bf88ff':'rgba(255,255,255,0.7)',cursor:zoomIdx!==null||skipping?'default':'pointer',fontSize:11,fontWeight:700}}>{skipping?'⏩ スキップ中…':'⏭ 演出スキップ'}</button>
     {renderZoomOverlay()}
   </div>;
 }
@@ -5052,6 +5048,7 @@ function GameApp({user,userName,cloudInitial,onLogout,offline}){
   const [loadErr,setLoadErr]=useState('');
   const [cloudSyncStatus,setCloudSyncStatus]=useState(''); // ''(idle) | 'saving' | 'saved' | 'error'
   const [cloudInitDone,setCloudInitDone]=useState(false);
+  const [showSettings,setShowSettings]=useState(false); // 設定モーダル（どこからでも開ける）
 
   // 起動時: クラウドデータがあればそれをロード（ローカルより優先）
   useEffect(()=>{
@@ -5166,7 +5163,10 @@ function GameApp({user,userName,cloudInitial,onLogout,offline}){
       </div>
     </div>}
     <div style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 16px 8px',background:'linear-gradient(180deg,rgba(20,5,45,0.88) 0%,transparent 100%)'}}>
-      <div style={{display:'flex',gap:4,}}><button onClick={()=>setShowSave(true)} style={{background:'none',border:'none',cursor:'pointer',fontSize:13,opacity:0.7,...FF}}>💾</button></div>
+      <div style={{display:'flex',gap:4,alignItems:'center'}}>
+        <button onClick={()=>setShowSave(true)} title="セーブ" style={{background:'none',border:'none',cursor:'pointer',fontSize:13,opacity:0.7,...FF}}>💾</button>
+        <button onClick={()=>setShowSettings(true)} title="設定" style={{background:'none',border:'none',cursor:'pointer',fontSize:13,opacity:0.7,...FF}}>⚙</button>
+      </div>
       <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:2}}>
         <div style={{display:'flex',alignItems:'center',gap:6}}>
           <div style={{fontWeight:900,fontSize:13,background:'linear-gradient(90deg,#ff9fcf,#bf88ff)',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent'}}>✨ モンスターライフ</div>
@@ -5203,6 +5203,8 @@ function GameApp({user,userName,cloudInitial,onLogout,offline}){
       {s.screen==='collection' &&<CollectionScreen s={s} d={d}/>}
       {s.screen==='bag'        &&<BagScreen s={s} d={d}/>}
     </div>
+    {/* 設定モーダル（どこからでも開ける） */}
+    {showSettings&&<SettingsModal s={s} d={d} onClose={()=>setShowSettings(false)}/>}
     <nav style={{position:'fixed',bottom:0,left:'50%',transform:'translateX(-50%)',width:'100%',maxWidth:430,background:'rgba(12,4,28,0.97)',backdropFilter:'blur(16px)',borderTop:'1px solid rgba(255,255,255,0.1)',display:'flex',justifyContent:'space-around',padding:'7px 0 14px'}}>
       {TABS.map(([id,ico,lbl])=><button key={id} onClick={()=>d({type:'SCREEN',v:id})} style={{background:'none',border:'none',cursor:'pointer',fontFamily:"'M PLUS Rounded 1c',sans-serif",display:'flex',flexDirection:'column',alignItems:'center',gap:1,color:s.screen===id?'#ff9fcf':'rgba(255,255,255,0.35)',transition:'color 0.15s'}}>
         <span style={{fontSize:20,filter:s.screen===id?'drop-shadow(0 0 6px #ff9fcf)':'none'}}>{ico}</span>
