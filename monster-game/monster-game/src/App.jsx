@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v2.1.0"; // フェーズ1完了: ガチャ天井+図鑑コンプ報酬+敵詳細段階アンロック+ハードモード
+const APP_VERSION = "v2.1.1"; // 天井維持(確定時のみリセット)+ハードモードトグル+プレイヤーLv100+節目報酬+施設Lv100(PL制限/効果半減)
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -898,14 +898,52 @@ const DEFAULT_STATE={coins:400,diamonds:0,monsters:[{...mkMon('mofurun',1),name:
   giftReleaseV1:true, // プレゼントBOXリリース記念配布完了フラグ - 新規プレイヤーは配布済み扱い
   gachaPity:{sinceSR:0,sinceUR:0,sinceLR:0}, // ガチャ天井カウンタ（コインガチャ）
   shop:{listings:[],pendingGold:0},facilities:{},
-  settings:{battleSpeed:1, animations:true, autoNextNode:true, confirmSell:true}, // 戦闘速度・アニメON/OFF等
+  settings:{battleSpeed:1, animations:true, autoNextNode:true, confirmSell:true, hardMode:false}, // 戦闘速度・アニメON/OFF等
   screen:'home',toast:null};
-const PLV_TABLE=[0,100,250,450,700,1000,1400,1900,2500,3200,4000,5000,6200,7600,9200,11000,13200,15700,18500,21600,25000,29000,33500,38500,44000,50000,57000,65000,74000,84000];
+// プレイヤーLvに必要なXP累計（index=Lv-1, [0]はLv1→Lv2に必要なXP）
+// Lv30まで既存数値を維持、Lv31以降は緩やかなカーブで延長 (Lv100で約160万XP/Lv)
+const PLV_TABLE=(()=>{
+  const base=[0,100,250,450,700,1000,1400,1900,2500,3200,4000,5000,6200,7600,9200,11000,13200,15700,18500,21600,25000,29000,33500,38500,44000,50000,57000,65000,74000,84000];
+  // Lv30以降は前Lvの1.085倍ペース
+  for(let i=30;i<100;i++){base.push(Math.floor(base[i-1]*1.085));}
+  return base;
+})();
+// プレイヤーLvの節目報酬: Lv達成時にプレゼントボックスに自動配布
+const PLAYER_LV_REWARDS={
+  5:  [{type:'diamond',amount:20,desc:'ダイヤ×20'},{type:'material',amount:1,payload:{key:'awaken_soul'},desc:'覚醒の魂×1'}],
+  10: [{type:'diamond',amount:40,desc:'ダイヤ×40'},{type:'material',amount:2,payload:{key:'awaken_soul'},desc:'覚醒の魂×2'},{type:'material',amount:1,payload:{key:'skill_stone'},desc:'スキル石×1'}],
+  20: [{type:'diamond',amount:80,desc:'ダイヤ×80'},{type:'material',amount:3,payload:{key:'awaken_soul'},desc:'覚醒の魂×3'},{type:'material',amount:2,payload:{key:'skill_stone'},desc:'スキル石×2'},{type:'key',amount:10,desc:'修行の鍵×10'}],
+  30: [{type:'diamond',amount:150,desc:'ダイヤ×150'},{type:'material',amount:5,payload:{key:'awaken_soul'},desc:'覚醒の魂×5'},{type:'material',amount:3,payload:{key:'skill_stone'},desc:'スキル石×3'},{type:'gem',payload:{color:'red',star:5},desc:'紅玉★5'}],
+  50: [{type:'diamond',amount:300,desc:'ダイヤ×300'},{type:'material',amount:8,payload:{key:'awaken_soul'},desc:'覚醒の魂×8'},{type:'material',amount:5,payload:{key:'skill_stone'},desc:'スキル石×5'},{type:'gem',payload:{color:'orange',star:6},desc:'琥珀★6'}],
+  70: [{type:'diamond',amount:500,desc:'ダイヤ×500'},{type:'material',amount:12,payload:{key:'awaken_soul'},desc:'覚醒の魂×12'},{type:'material',amount:8,payload:{key:'skill_stone'},desc:'スキル石×8'},{type:'gem',payload:{color:'blue',star:6},desc:'蒼玉★6'},{type:'gem',payload:{color:'green',star:6},desc:'翠玉★6'}],
+  100:[{type:'diamond',amount:1000,desc:'ダイヤ×1000'},{type:'material',amount:20,payload:{key:'awaken_soul'},desc:'覚醒の魂×20'},{type:'material',amount:15,payload:{key:'skill_stone'},desc:'スキル石×15'},{type:'gem',payload:{color:'purple',star:7},desc:'紫晶★7'}],
+};
 function addPlayerXP(s,xp){
   let lv=s.playerLv,px=s.playerXp+xp;
   const msgs=[];
-  while(lv<PLV_TABLE.length&&px>=(PLV_TABLE[lv]||99999)){px-=PLV_TABLE[lv]||99999;lv++;msgs.push(`🎉 プレイヤーLv.${lv}！`);}
-  return{...s,playerLv:lv,playerXp:px,toast:msgs.length?msgs[msgs.length-1]:s.toast};
+  const pendingGifts=[];
+  while(lv<PLV_TABLE.length&&px>=(PLV_TABLE[lv]||99999)){
+    px-=PLV_TABLE[lv]||99999;lv++;
+    msgs.push(`🎉 プレイヤーLv.${lv}！`);
+    // 節目報酬: PLAYER_LV_REWARDS に該当があればプレゼントボックスへ
+    const rewards=PLAYER_LV_REWARDS[lv];
+    if(rewards){
+      rewards.forEach((r,i)=>{
+        pendingGifts.push({
+          id:'gift_plv'+lv+'_'+i+'_'+Date.now().toString(36)+Math.random().toString(36).slice(2,4),
+          type:r.type,amount:r.amount||1,payload:r.payload||null,
+          title:`Lv.${lv} 達成記念`,
+          desc:r.desc||'',
+          from:'プレイヤーランク',
+          createdAt:Date.now(),
+          expiresAt:Date.now()+30*86400000, // 30日期限
+        });
+      });
+      msgs.push(`🎁 Lv.${lv} 達成報酬がプレゼントBOXに届いた！`);
+    }
+  }
+  const newGifts=pendingGifts.length>0?[...pendingGifts,...(s.giftBox||[])]:(s.giftBox||[]);
+  return{...s,playerLv:lv,playerXp:px,giftBox:newGifts,toast:msgs.length?msgs[msgs.length-1]:s.toast};
 }
 
 // セーブデータを安全にマイグレーション（コードが変わっても重要データを維持）
@@ -1128,15 +1166,17 @@ const INIT=()=>{
 // 各施設はLv1〜10、レベルごとに効果UP & 建設/Lv上げコストUP
 // effect: 'atk'/'def'/'spd'/'luk'/'hp'/'trainXp'
 const FACILITIES={
-  atk_dojo:  {name:'攻撃の道場',  icon:'⚔', effect:'atk', perLv:0.04, base:500, desc:'全モンスターのATK+%'},
-  def_dojo:  {name:'守りの道場',  icon:'🛡', effect:'def', perLv:0.04, base:500, desc:'全モンスターのDEF+%'},
-  spd_dojo:  {name:'俊敏の道場',  icon:'🌪', effect:'spd', perLv:0.04, base:450, desc:'全モンスターのSPD+%'},
-  luk_dojo:  {name:'幸運の神殿',  icon:'🍀', effect:'luk', perLv:0.04, base:550, desc:'全モンスターのLUK+%'},
-  hp_inn:    {name:'療養所',      icon:'💚', effect:'hp',  perLv:0.05, base:600, desc:'全モンスターのHP+%'},
+  atk_dojo:  {name:'攻撃の道場',  icon:'⚔', effect:'atk', perLv:0.02, base:500, desc:'全モンスターのATK+%'},
+  def_dojo:  {name:'守りの道場',  icon:'🛡', effect:'def', perLv:0.02, base:500, desc:'全モンスターのDEF+%'},
+  spd_dojo:  {name:'俊敏の道場',  icon:'🌪', effect:'spd', perLv:0.02, base:450, desc:'全モンスターのSPD+%'},
+  luk_dojo:  {name:'幸運の神殿',  icon:'🍀', effect:'luk', perLv:0.02, base:550, desc:'全モンスターのLUK+%'},
+  hp_inn:    {name:'療養所',      icon:'💚', effect:'hp',  perLv:0.025,base:600, desc:'全モンスターのHP+%'},
   training:  {name:'訓練場',      icon:'🏋', effect:'trainXp', perLv:1, base:800, desc:'モンスター1体にXP付与（コイン消費）'},
   bazaar:    {name:'雑貨商',      icon:'🏪', effect:'shop',    perLv:1, base:500, desc:'素材ガチャ割引・自動出品・出品中ドロップ率UP'},
   gem_workshop:{name:'宝石工房',  icon:'💎', effect:'gem',     perLv:1, base:1500, desc:'Lv1:宝石合成解放 / Lv3:自動連続合成解放'},
 };
+// 施設の最大Lv（プレイヤーLvでも制限される）
+const FACILITY_MAX_LV=100;
 // ─── 宝石システム ─────────────────────────────────────────
 // 5色 → 対応ステータス
 const GEM_COLORS=['red','orange','blue','green','purple'];
@@ -1549,7 +1589,9 @@ function reducer(s,a){
       const {facKey}=a;
       const f=FACILITIES[facKey];if(!f)return{...s,toast:'施設が見つかりません'};
       const cur=s.facilities[facKey]?.lv||0;
-      if(cur>=10)return{...s,toast:'Lv10（最大）に達しています'};
+      if(cur>=FACILITY_MAX_LV)return{...s,toast:`Lv${FACILITY_MAX_LV}（最大）に達しています`};
+      // プレイヤーLvの追い越し制限: 施設Lv ≤ プレイヤーLv
+      if(cur>=s.playerLv)return{...s,toast:`プレイヤーLv${s.playerLv}が必要（施設Lv ≤ プレイヤーLv）`};
       const cost=facLvCost(facKey,cur);
       if(s.coins<cost)return{...s,toast:`${cost}🪙必要（不足）`};
       const newLv=cur+1;
@@ -1704,11 +1746,10 @@ function reducer(s,a){
           type=POOL[Math.floor(Math.random()*POOL.length)];
         }
         pulled.push(type);guaranteedFlags.push(guaranteed);
-        // 排出レアでカウンタリセット
-        const r=MONS[type].rarity;
-        if(r==='LR'){pity.sinceLR=0;pity.sinceUR=0;pity.sinceSR=0;}
-        else if(r==='UR'){pity.sinceUR=0;pity.sinceSR=0;}
-        else if(r==='SR'){pity.sinceSR=0;}
+        // カウンタリセットは天井による確定排出時のみ（自然排出ではリセットしない）
+        if(guaranteed==='LR'){pity.sinceLR=0;pity.sinceUR=0;pity.sinceSR=0;}
+        else if(guaranteed==='UR'){pity.sinceUR=0;pity.sinceSR=0;}
+        else if(guaranteed==='SR'){pity.sinceSR=0;}
       }
       let mons=[...s.monsters];const results=[];
       const ownedTypesBefore=new Set(s.monsters.map(m=>m.type));
@@ -2516,9 +2557,11 @@ function HomeScreen({s,d}){
       {facOpen&&<div style={{marginTop:10,display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:6}}>
         {Object.entries(FACILITIES).map(([fk,f])=>{
           const lv=s.facilities[fk]?.lv||0;
-          const max=lv>=10;
+          const max=lv>=FACILITY_MAX_LV;
+          const blockedByPL=lv>=s.playerLv&&!max; // プレイヤーLv追い越し防止
           const cost=facLvCost(fk,lv);
           const canPay=s.coins>=cost;
+          const canBuild=!max&&!blockedByPL&&canPay;
           const eff=Math.round(lv*f.perLv*100);
           const isTraining=fk==='training';
           const isBazaar=fk==='bazaar';
@@ -2527,15 +2570,17 @@ function HomeScreen({s,d}){
               <div style={{fontSize:18}}>{f.icon}</div>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:10,fontWeight:900,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{f.name}</div>
-                <div style={{fontSize:8,opacity:0.6,marginTop:1}}>Lv{lv}/10{!isTraining&&` +${eff}%`}</div>
+                <div style={{fontSize:8,opacity:0.6,marginTop:1}}>Lv{lv}/{FACILITY_MAX_LV}{!isTraining&&` +${eff}%`}</div>
               </div>
             </div>
             <div style={{fontSize:8,opacity:0.5,marginTop:3,height:18,lineHeight:1.3,overflow:'hidden'}}>{f.desc}</div>
             <div style={{display:'flex',gap:4,marginTop:5}}>
-              {!max?<button onClick={()=>d({type:'FACILITY_BUILD',facKey:fk})} disabled={!canPay}
-                style={{...FF,flex:1,padding:'4px 0',borderRadius:8,border:'none',background:canPay?'linear-gradient(135deg,#bf40ff,#7c4dff)':'rgba(255,255,255,0.05)',color:canPay?'#fff':'rgba(255,255,255,0.3)',cursor:canPay?'pointer':'default',fontSize:9,fontWeight:900}}>
-                {lv===0?`建設 ${cost}🪙`:`+1 ${cost}🪙`}
-              </button>:<div style={{flex:1,padding:'4px 0',textAlign:'center',fontSize:9,color:'#ffd700',fontWeight:900}}>MAX</div>}
+              {max?<div style={{flex:1,padding:'4px 0',textAlign:'center',fontSize:9,color:'#ffd700',fontWeight:900}}>MAX</div>
+                :blockedByPL?<div style={{flex:1,padding:'4px 0',textAlign:'center',fontSize:8,color:'#ef9a9a',fontWeight:700,lineHeight:1.2}}>PL{s.playerLv}上限<br/>PLを上げる</div>
+                :<button onClick={()=>d({type:'FACILITY_BUILD',facKey:fk})} disabled={!canBuild}
+                  style={{...FF,flex:1,padding:'4px 0',borderRadius:8,border:'none',background:canBuild?'linear-gradient(135deg,#bf40ff,#7c4dff)':'rgba(255,255,255,0.05)',color:canBuild?'#fff':'rgba(255,255,255,0.3)',cursor:canBuild?'pointer':'default',fontSize:9,fontWeight:900}}>
+                  {lv===0?`建設 ${cost}🪙`:`+1 ${cost.toLocaleString()}🪙`}
+                </button>}
               {isTraining&&lv>0&&<button onClick={()=>setTrainOpen(true)} style={{...FF,flex:1,padding:'4px 0',borderRadius:8,border:'1px solid #ffd70066',background:'rgba(255,215,0,0.1)',color:'#ffd700',cursor:'pointer',fontSize:9,fontWeight:900}}>訓練</button>}
               {isBazaar&&lv>0&&<button onClick={()=>d({type:'SCREEN',v:'gacha'})} style={{...FF,flex:1,padding:'4px 0',borderRadius:8,border:'1px solid #66bb6a66',background:'rgba(102,187,106,0.1)',color:'#66bb6a',cursor:'pointer',fontSize:9,fontWeight:900}}>🎁 ガチャ</button>}
             </div>
@@ -2856,14 +2901,24 @@ function QuestScreen({s,d}){
     }
   },[phase]);
 
-  function startQuest(key,resetHp=true,hardMode=false){
+  function startQuest(key,resetHp=true,hardMode){
     if(!pm||!stats)return;
+    // 引数未指定なら settings.hardMode を参照（次クエストでも維持）
+    const useHard=typeof hardMode==='boolean'?hardMode:!!s.settings?.hardMode;
+    // ハードモードは章クリア後にのみ有効化（解放されてない章で誤ハードを防ぐ）
+    const q=QUESTS[key];
+    let actualHard=useHard;
+    if(actualHard&&q?.chapter){
+      // この章の全ステージクリア済みかチェック
+      const chapClear=Object.values(QUESTS).filter(qq=>qq.chapter===q.chapter).every(qq=>s.clearedQuests[Object.keys(QUESTS).find(k=>QUESTS[k]===qq)]);
+      if(!chapClear)actualHard=false; // 解放前は通常モード扱い
+    }
     const maxHp=stats.maxHp;
     const hp=resetHp?maxHp:Math.max(1,R.current.monHp);
-    R.current={monHp:hp,enemies:[],activeIdx:0,loot:[],xp:0,keyDrops:0,equipDrops:[],defeatedTypes:[],enemyKills:{},qKey:key,hardMode:!!hardMode,nodeIdx:0,cphase:'ready',phase:'quest',
+    R.current={monHp:hp,enemies:[],activeIdx:0,loot:[],xp:0,keyDrops:0,equipDrops:[],defeatedTypes:[],enemyKills:{},qKey:key,hardMode:actualHard,nodeIdx:0,cphase:'ready',phase:'quest',
                buffAtk:1,buffDef:1,buffLuk:0,gauges:[0,0,0,0]};
     setQKey(key);setNodeIdx(0);setMonHp(hp);setEnemies([]);setActiveEnemyIdx(0);setLoot([]);
-    setLog([`${pm.name}が${QUESTS[key].name}${hardMode?'(ハード)':''}へ出発！`]);
+    setLog([`${pm.name}が${QUESTS[key].name}${actualHard?'(ハード)':''}へ出発！`]);
     setSubGauges([0,0,0,0]);setSubFlash([false,false,false,false]);
     setPhase('quest');setCphase('ready');setDmg(null);
     processNodeFn(key,0,hp,[]);
@@ -3189,6 +3244,22 @@ function QuestScreen({s,d}){
           return 6;
         })();
         return <div style={{display:'flex',flexDirection:'column',gap:8}}>
+          {/* モード切替トグル */}
+          {(()=>{
+            // ハード解放: 1章でもクリア済みの章があるか
+            const anyChapClear=Object.entries(byChap).some(([ch,qs])=>qs.every(([k])=>cleared[k]));
+            if(!anyChapClear)return null;
+            const isHard=!!s.settings?.hardMode;
+            return <div style={{...CARD,padding:'8px 10px',display:'flex',gap:4,background:isHard?'linear-gradient(135deg,rgba(255,87,34,0.15),rgba(211,47,47,0.10))':'rgba(255,255,255,0.04)',border:`1px solid ${isHard?'#ff572266':'rgba(255,255,255,0.08)'}`}}>
+              <button onClick={()=>d({type:'SET_SETTING',key:'hardMode',value:false})} style={{...FF,flex:1,padding:'8px 0',borderRadius:8,border:'none',cursor:'pointer',background:!isHard?'linear-gradient(135deg,#bf88ff,#7c3aed)':'transparent',color:!isHard?'#fff':'rgba(255,255,255,0.5)',fontSize:11,fontWeight:900}}>▶ 通常</button>
+              <button onClick={()=>d({type:'SET_SETTING',key:'hardMode',value:true})} style={{...FF,flex:1,padding:'8px 0',borderRadius:8,border:'none',cursor:'pointer',background:isHard?'linear-gradient(135deg,#ff5722,#d32f2f)':'transparent',color:isHard?'#fff':'rgba(255,255,255,0.5)',fontSize:11,fontWeight:900}}>🔥 ハード</button>
+            </div>;
+          })()}
+          {(()=>{
+            const isHard=!!s.settings?.hardMode;
+            const anyChapClear=Object.entries(byChap).some(([ch,qs])=>qs.every(([k])=>cleared[k]));
+            return isHard&&anyChapClear&&<div style={{fontSize:9,opacity:0.6,textAlign:'center',padding:'2px 0'}}>🔥 ハード: 敵2倍 / 報酬2倍 / 装備ドロップ率1.5倍 (章クリア済みのみ)</div>;
+          })()}
           {Object.entries(byChap).sort((a,b)=>+a[0]-+b[0]).map(([chap,quests])=>{
             const chNum=+chap;
             const unlocked=isChapUnlocked(chNum);
@@ -3213,28 +3284,28 @@ function QuestScreen({s,d}){
                 {quests.filter(([k,q])=>stageVisible(chNum,q.stage)).map(([key,q])=>{
                   const isClear=!!cleared[key];
                   const isHardClear=!!cleared[key+'_hard'];
-                  const isNext=isNextStage(chNum,q.stage); // 次の挑戦先（黄色ハイライト）
-                  const hardUnlocked=chapClear; // 章クリア後にハードモード解放
-                  return <div key={key} style={{...CARD,padding:'10px 12px',border:`1px solid ${isNext?'#ffd700aa':q.rankCol+'66'}`,background:isClear?'rgba(255,255,255,0.04)':q.bg,animation:isNext?'pulse 2.5s ease-in-out infinite':undefined,boxShadow:isNext?'0 0 12px rgba(255,215,0,0.18)':undefined}}>
-                    <div style={{display:'flex',gap:10,alignItems:'center'}}>
-                      <div style={{minWidth:34,textAlign:'center'}}>
-                        <div style={{fontSize:10,fontWeight:900,color:isClear?'#66bb6a':isNext?'#ffd700':'#ffd700'}}>{isClear?'✓':q.isBoss?'👑':'⚔'}</div>
-                        <div style={{fontSize:14,fontWeight:900,marginTop:2}}>{q.stage}</div>
-                      </div>
-                      <div style={{flex:1,textAlign:'left'}}>
-                        <div style={{fontWeight:900,fontSize:13,color:isNext?'#ffd700':undefined}}>{q.name}{q.isBoss&&<span style={{marginLeft:5,fontSize:9,color:'#ff5722'}}>BOSS</span>}{isNext&&<span style={{marginLeft:6,fontSize:8,color:'#ffd700',background:'rgba(255,215,0,0.15)',padding:'1px 5px',borderRadius:6}}>NEW</span>}{isHardClear&&<span style={{marginLeft:5,fontSize:8,color:'#ff5722',background:'rgba(255,87,34,0.15)',padding:'1px 5px',borderRadius:6}}>🔥H</span>}</div>
-                        <div style={{fontSize:10,opacity:0.6,marginTop:2}}>
-                          {q.nodes.filter(n=>n.t==='enemy'||n.t==='boss').map(n=>ENEMIES[n.e]?.icon).join(' ')}
-                          {q.nodes.some(n=>n.t==='chest')&&<span style={{marginLeft:6,fontSize:11}}>📦</span>}
-                        </div>
+                  const isNext=isNextStage(chNum,q.stage);
+                  const hardUnlocked=chapClear;
+                  const hardActive=s.settings?.hardMode&&hardUnlocked;
+                  return <button key={key} onClick={()=>startQuest(key)}
+                    style={{...CARD,...FF,display:'flex',gap:10,alignItems:'center',cursor:'pointer',padding:'10px 12px',
+                      border:`1px solid ${hardActive?'#ff572266':isNext?'#ffd700aa':q.rankCol+'66'}`,
+                      background:isClear?'rgba(255,255,255,0.04)':q.bg,
+                      animation:isNext?'pulse 2.5s ease-in-out infinite':undefined,
+                      boxShadow:hardActive?'0 0 12px rgba(255,87,34,0.25)':isNext?'0 0 12px rgba(255,215,0,0.18)':undefined}}>
+                    <div style={{minWidth:34,textAlign:'center'}}>
+                      <div style={{fontSize:10,fontWeight:900,color:isClear?'#66bb6a':isNext?'#ffd700':'#ffd700'}}>{isClear?'✓':q.isBoss?'👑':'⚔'}</div>
+                      <div style={{fontSize:14,fontWeight:900,marginTop:2}}>{q.stage}</div>
+                    </div>
+                    <div style={{flex:1,textAlign:'left'}}>
+                      <div style={{fontWeight:900,fontSize:13,color:isNext?'#ffd700':undefined}}>{q.name}{q.isBoss&&<span style={{marginLeft:5,fontSize:9,color:'#ff5722'}}>BOSS</span>}{isNext&&<span style={{marginLeft:6,fontSize:8,color:'#ffd700',background:'rgba(255,215,0,0.15)',padding:'1px 5px',borderRadius:6}}>NEW</span>}{isHardClear&&<span style={{marginLeft:5,fontSize:8,color:'#ff5722',background:'rgba(255,87,34,0.15)',padding:'1px 5px',borderRadius:6}}>🔥H</span>}</div>
+                      <div style={{fontSize:10,opacity:0.6,marginTop:2}}>
+                        {q.nodes.filter(n=>n.t==='enemy'||n.t==='boss').map(n=>ENEMIES[n.e]?.icon).join(' ')}
+                        {q.nodes.some(n=>n.t==='chest')&&<span style={{marginLeft:6,fontSize:11}}>📦</span>}
                       </div>
                     </div>
-                    <div style={{display:'grid',gridTemplateColumns:hardUnlocked?'1fr 1fr':'1fr',gap:5,marginTop:8}}>
-                      <button onClick={()=>startQuest(key,true,false)} style={{...FF,padding:'7px 0',borderRadius:8,border:'none',cursor:'pointer',background:'linear-gradient(135deg,#bf88ff,#7c3aed)',color:'#fff',fontSize:11,fontWeight:900}}>▶ 通常</button>
-                      {hardUnlocked&&<button onClick={()=>startQuest(key,true,true)} style={{...FF,padding:'7px 0',borderRadius:8,border:'none',cursor:'pointer',background:'linear-gradient(135deg,#ff5722,#d32f2f)',color:'#fff',fontSize:11,fontWeight:900}}>🔥 ハード</button>}
-                    </div>
-                    {hardUnlocked&&<div style={{fontSize:8,opacity:0.55,marginTop:5,textAlign:'center'}}>ハード: 敵2倍 / 報酬2倍 / 装備ドロップ率1.5倍</div>}
-                  </div>;
+                    <div style={{fontSize:16,opacity:0.7,color:hardActive?'#ff5722':isNext?'#ffd700':undefined}}>{hardActive?'🔥':'▶'}</div>
+                  </button>;
                 })}
               </div>}
             </div>;
