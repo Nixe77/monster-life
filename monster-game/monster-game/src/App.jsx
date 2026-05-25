@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v1.9.6"; // 一括売却にC/R/SR/UR/★5達成済の選択ボタン拡張
+const APP_VERSION = "v2.0.3"; // ★9→10成功率を1%に(★10は超レア)
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -838,7 +838,7 @@ const QUESTS={
 };
 
 // ─── STAT CALCULATION ────────────────────────────────────
-function calcStats(m, equipInventory, facilities){
+function calcStats(m, equipInventory, facilities, gems){
   const b=BASE_STATS[m.type];if(!b)return{maxHp:50,hp:50,atk:8,def:5,spd:8,luk:8};
   const lm=1+(m.level-1)*0.09;
   const bm=1+(m.lb||0)*0.12;
@@ -855,17 +855,23 @@ function calcStats(m, equipInventory, facilities){
   // 施設ボーナス（全モンスター共通の乗算）
   const fac=facilities||{};
   const fAtk=facBonus(fac,'atk'), fDef=facBonus(fac,'def'), fSpd=facBonus(fac,'spd'), fLuk=facBonus(fac,'luk'), fHp=facBonus(fac,'hp');
+  // 宝石ボーナス（5色 → 各ステに%加算）
+  const gemList=gems||[];
+  const gemFind=id=>id?gemList.find(g=>g.id===id):null;
+  const mg=m.gems||{};
+  const gemBonus=(color)=>{const g=gemFind(mg[color]);return g?GEM_STAR_BONUS[g.star]/100:0;};
+  const gHp=1+gemBonus('red'),gAtk=1+gemBonus('orange'),gDef=1+gemBonus('blue'),gSpd=1+gemBonus('green'),gLuk=1+gemBonus('purple');
   return{
-    maxHp:Math.ceil(b.hp*mult*fHp),
-    atk:Math.ceil((b.atk*mult+atk)*fAtk),
-    def:Math.ceil((b.def*mult+def)*fDef),
-    spd:Math.ceil((b.spd*mult+spd)*fSpd),
-    luk:Math.ceil((b.luk*mult+luk)*fLuk),
+    maxHp:Math.ceil(b.hp*mult*fHp*gHp),
+    atk:Math.ceil((b.atk*mult+atk)*fAtk*gAtk),
+    def:Math.ceil((b.def*mult+def)*fDef*gDef),
+    spd:Math.ceil((b.spd*mult+spd)*fSpd*gSpd),
+    luk:Math.ceil((b.luk*mult+luk)*fLuk*gLuk),
   };
 }
 
 // ─── GLOBAL REDUCER ──────────────────────────────────────
-const mkMon=(type,id)=>({id,type,name:`${MONS[type]?.name||type}${Math.floor(Math.random()*999)+1}`,level:1,xp:0,lb:0,awaken:0,skillLv:1,rarity:MONS[type]?.rarity||'C',equip:{hat:null,acc:null,wpn:null},protected:false});
+const mkMon=(type,id)=>({id,type,name:`${MONS[type]?.name||type}${Math.floor(Math.random()*999)+1}`,level:1,xp:0,lb:0,awaken:0,skillLv:1,rarity:MONS[type]?.rarity||'C',equip:{hat:null,acc:null,wpn:null},gems:{red:null,orange:null,blue:null,green:null,purple:null},protected:false});
 const SAVE_KEY='mlg_save_v7'; // パーティー制（メイン+サブ4体）導入のためバンプ
 // 初期装備3個（毎回新ID生成）
 const _initialEquip = () => [
@@ -878,6 +884,7 @@ const DEFAULT_STATE={coins:400,monsters:[{...mkMon('mofurun',1),name:'モフル�
   clearedQuests:{},
   playerLv:1,playerXp:0,keys:0,
   materials:{},equipInventory:_initialEquip(),
+  gems:[], // 宝石インベントリ ({id,color,star})
   shop:{listings:[],pendingGold:0},facilities:{},
   settings:{battleSpeed:1, animations:true, autoNextNode:true, confirmSell:true}, // 戦闘速度・アニメON/OFF等
   screen:'home',toast:null};
@@ -907,6 +914,11 @@ function migrateSave(p){
       rarity:m.rarity&&RO.includes(m.rarity)?m.rarity:MONS[m.type].rarity,
       // 後でinventory反映後に再度フィルタするため、ここでは生のままコピー
       equip:{hat:m.equip?.hat||null, acc:m.equip?.acc||null, wpn:m.equip?.wpn||null},
+      // 宝石装備（5色のスロット、旧データには存在しないので空で初期化）
+      gems:{
+        red:m.gems?.red||null,orange:m.gems?.orange||null,blue:m.gems?.blue||null,
+        green:m.gems?.green||null,purple:m.gems?.purple||null,
+      },
       protected:!!m.protected,
     };
   }).filter(Boolean);
@@ -1004,6 +1016,8 @@ function migrateSave(p){
     })(),
     materials,
     equipInventory:equipInventory.length>0?equipInventory:_initialEquip(),
+    // 宝石インベントリ（旧セーブには存在しない → 空配列）
+    gems:Array.isArray(p.gems)?p.gems.filter(g=>g&&g.id&&GEM_COLORS.includes(g.color)&&g.star>=1&&g.star<=10):[],
     shop:{listings,pendingGold:p.shop?.pendingGold||0,autoList:!!p.shop?.autoList},
     facilities:p.facilities||{},
     playerLv:p.playerLv||1,
@@ -1050,7 +1064,37 @@ const FACILITIES={
   hp_inn:    {name:'療養所',      icon:'💚', effect:'hp',  perLv:0.05, base:600, desc:'全モンスターのHP+%'},
   training:  {name:'訓練場',      icon:'🏋', effect:'trainXp', perLv:1, base:800, desc:'モンスター1体にXP付与（コイン消費）'},
   bazaar:    {name:'雑貨商',      icon:'🏪', effect:'shop',    perLv:1, base:500, desc:'素材ガチャ割引・自動出品・出品中ドロップ率UP'},
+  gem_workshop:{name:'宝石工房',  icon:'💎', effect:'gem',     perLv:1, base:1500, desc:'Lv1:宝石合成解放 / Lv3:自動連続合成解放'},
 };
+// ─── 宝石システム ─────────────────────────────────────────
+// 5色 → 対応ステータス
+const GEM_COLORS=['red','orange','blue','green','purple'];
+const GEM_STAT_MAP={red:'hp',orange:'atk',blue:'def',green:'spd',purple:'luk'};
+const GEM_COLOR_CSS={red:'#ef5350',orange:'#ff9800',blue:'#42a5f5',green:'#66bb6a',purple:'#bf88ff'};
+const GEM_COLOR_NAME={red:'紅玉',orange:'琥珀',blue:'蒼玉',green:'翠玉',purple:'紫晶'};
+// 星N → ステータス上昇率(%): index=star, [0]はプレースホルダ
+const GEM_STAR_BONUS=[0,5,12,22,35,50,70,90,115,145,180];
+// 星N → 星(N+1)合成成功率: index=from_star (1〜9)
+// 星が高いほど失敗確率が増える（★8→9で8%、★9→10で1%＝至難の業）
+const GEM_FUSE_RATE=[0,0.95,0.90,0.80,0.65,0.50,0.30,0.15,0.08,0.01,0];
+// レアリティ → 星1〜6の出現確率 (lb=5モンスター売却時、★7以上は合成でのみ到達)
+const GEM_DROP_TABLE={
+  C: [0.55,0.30,0.13,0.02,0,   0,   0,0,0,0],
+  R: [0.30,0.40,0.22,0.06,0.02,0,   0,0,0,0],
+  SR:[0.10,0.30,0.35,0.18,0.05,0.02,0,0,0,0],
+  UR:[0.02,0.15,0.30,0.30,0.18,0.05,0,0,0,0],
+  LR:[0,   0.05,0.20,0.35,0.25,0.10,0.05,0,0,0],
+};
+function pickGemStar(rarity){
+  const tbl=GEM_DROP_TABLE[rarity]||GEM_DROP_TABLE.C;
+  const r=Math.random();let acc=0;
+  for(let i=0;i<tbl.length;i++){acc+=tbl[i];if(r<acc)return i+1;}
+  return 1;
+}
+function mkGem(){
+  const color=GEM_COLORS[Math.floor(Math.random()*GEM_COLORS.length)];
+  return {id:'g_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),color,star:1};
+}
 function facLvCost(facKey, curLv){
   // 建設: base / Lv上げ: base * (curLv+1)^1.6
   const f=FACILITIES[facKey]; if(!f) return 99999;
@@ -1380,6 +1424,75 @@ function reducer(s,a){
       const cur=s.shop.autoList||false;
       return{...s,shop:{...s.shop,autoList:!cur},toast:!cur?'⚡ 自動出品 ON':'自動出品 OFF'};
     }
+    case 'EQUIP_GEM':{
+      // 宝石をモンスターに装備（同色スロットを置き換え、外した宝石はインベントリへ戻る）
+      const {monsterId,gemId}=a;
+      const gem=(s.gems||[]).find(g=>g.id===gemId);
+      if(!gem)return{...s,toast:'宝石が見つかりません'};
+      const monsters=s.monsters.map(m=>{
+        if(m.id!==monsterId)return m;
+        return{...m,gems:{...(m.gems||{}),[gem.color]:gemId}};
+      });
+      return{...s,monsters,toast:`💎 ${GEM_COLOR_NAME[gem.color]}★${gem.star} を装備`};
+    }
+    case 'UNEQUIP_GEM':{
+      // 宝石を外す
+      const {monsterId,color}=a;
+      const monsters=s.monsters.map(m=>{
+        if(m.id!==monsterId)return m;
+        return{...m,gems:{...(m.gems||{}),[color]:null}};
+      });
+      return{...s,monsters,toast:'宝石を外しました'};
+    }
+    case 'FUSE_GEMS':{
+      // 同星の宝石2個を合成 → 成功:星+1 / 失敗:星-1
+      const {gemAId,gemBId}=a;
+      const gems=s.gems||[];
+      const gA=gems.find(g=>g.id===gemAId),gB=gems.find(g=>g.id===gemBId);
+      if(!gA||!gB||gA.id===gB.id)return{...s,toast:'宝石が見つかりません'};
+      if(gA.star!==gB.star)return{...s,toast:'同じ星の数の宝石を選んでください'};
+      if(gA.star>=10)return{...s,toast:'★10は最大値です'};
+      // 装備中の宝石は合成不可
+      const equippedIds=new Set();
+      s.monsters.forEach(m=>{Object.values(m.gems||{}).forEach(id=>{if(id)equippedIds.add(id);});});
+      if(equippedIds.has(gA.id)||equippedIds.has(gB.id))return{...s,toast:'装備中の宝石は合成できません'};
+      const rate=GEM_FUSE_RATE[gA.star]||0;
+      const success=Math.random()<rate;
+      const newStar=success?gA.star+1:Math.max(1,gA.star-1);
+      // 新色は2つのうちランダム
+      const newColor=Math.random()<0.5?gA.color:gB.color;
+      const newGem={id:'g_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),color:newColor,star:newStar};
+      const remaining=gems.filter(g=>g.id!==gA.id&&g.id!==gB.id);
+      remaining.push(newGem);
+      return{...s,gems:remaining,toast:success?`✨ 合成成功! ★${newStar}`:`💧 失敗… ★${newStar}`,lastFuseResult:{success,newGem}};
+    }
+    case 'FUSE_GEMS_AUTO':{
+      // 自動連続合成: 指定された宝石プールから同星ペアを順次合成（宝石工房Lv3以上）
+      const gwLv=s.facilities.gem_workshop?.lv||0;
+      if(gwLv<3)return{...s,toast:'宝石工房Lv3で解放されます'};
+      const targetStar=a.star;
+      const gems=s.gems||[];
+      const equippedIds=new Set();
+      s.monsters.forEach(m=>{Object.values(m.gems||{}).forEach(id=>{if(id)equippedIds.add(id);});});
+      const pool=gems.filter(g=>g.star===targetStar&&!equippedIds.has(g.id));
+      if(pool.length<2)return{...s,toast:`★${targetStar}が2個以上必要です`};
+      // ペアを作って順次合成（プールが奇数の場合は1個余る）
+      let working=[...pool];
+      let other=gems.filter(g=>g.star!==targetStar||equippedIds.has(g.id));
+      let success=0,fail=0,maxOut=0;
+      const rate=GEM_FUSE_RATE[targetStar]||0;
+      while(working.length>=2){
+        const a1=working.shift(),a2=working.shift();
+        const ok=Math.random()<rate;
+        const ns=ok?targetStar+1:Math.max(1,targetStar-1);
+        const nc=Math.random()<0.5?a1.color:a2.color;
+        if(ok){success++;if(ns>maxOut)maxOut=ns;}else{fail++;}
+        other.push({id:'g_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6)+success+fail,color:nc,star:ns});
+      }
+      // 余った1個があれば戻す
+      if(working.length===1)other.push(working[0]);
+      return{...s,gems:other,toast:`自動合成: 成功${success} 失敗${fail}`};
+    }
     case 'SET_PARTY':{
       // メインを変更。新メインが既にサブにいた場合はサブから外す
       const newMain=a.id;
@@ -1635,21 +1748,31 @@ function reducer(s,a){
     }
     case 'SELL_MONSTERS':{
       // モンスターを売却。a.ids=[id1,id2,...]
+      // lb=5（最大限界突破）達成済みのモンスターを売却すると宝石ドロップ（色ランダム、星はレアで重み）
       const SELL_PRICE={C:50,R:200,SR:800,UR:3000,LR:10000};
       const ids=new Set(a.ids||[]);
       if(ids.size===0)return s;
       const targets=s.monsters.filter(m=>ids.has(m.id)&&!m.protected&&m.id!==s.party.main&&!s.party.subs?.includes(m.id));
       if(targets.length===0)return{...s,toast:'売却できるモンスターがありません'};
       let total=0;
+      const droppedGems=[];
       targets.forEach(m=>{
         const base=SELL_PRICE[m.rarity]||50;
-        // Lv・限界突破・覚醒で価格UP
         const mult=1 + (m.level-1)*0.05 + (m.lb||0)*0.3 + (m.awaken||0)*0.5;
-        total+=Math.floor(base*mult);
+        // 1体あたり最大1000Gで頭打ち（インフレ抑制）
+        total+=Math.min(1000,Math.floor(base*mult));
+        // ★5達成（lb=5）→ 宝石ドロップ
+        if((m.lb||0)>=5){
+          const star=pickGemStar(m.rarity);
+          const color=GEM_COLORS[Math.floor(Math.random()*5)];
+          droppedGems.push({id:'g_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6)+m.id,color,star});
+        }
       });
       const soldIds=new Set(targets.map(m=>m.id));
       const mons=s.monsters.filter(m=>!soldIds.has(m.id));
-      return{...s,monsters:mons,coins:s.coins+total,toast:`💰 ${targets.length}体を売却 +${total}G`};
+      const newGems=[...(s.gems||[]),...droppedGems];
+      const gemMsg=droppedGems.length>0?` 💎${droppedGems.length}個獲得！`:'';
+      return{...s,monsters:mons,coins:s.coins+total,gems:newGems,toast:`💰 ${targets.length}体を売却 +${total}G${gemMsg}`};
     }
     case 'SELL_EQUIPS':{
       // 装備を売却。a.ids=[eqId1,eqId2,...]
@@ -2072,7 +2195,7 @@ function HomeScreen({s,d}){
   },[]);
 
   if(!pm)return null;
-  const st=calcStats(pm, s.equipInventory, s.facilities);const mi=MONS[pm.type];
+  const st=calcStats(pm, s.equipInventory, s.facilities, s.gems);const mi=MONS[pm.type];
   const STAT_DEFS=[['HP',st.maxHp,'#ef5350'],['ATK',st.atk,'#ff7043'],['DEF',st.def,'#42a5f5'],['SPD',st.spd,'#66bb6a'],['LUK',st.luk,'#ab47bc']];
   const MAX_S=120;
   const listedKeys=new Set(s.shop.listings.map(l=>l.itemKey));
@@ -2370,7 +2493,7 @@ function QuestScreen({s,d}){
   const [subGauges,setSubGauges]=useState([0,0,0,0]);
   const [subFlash,setSubFlash]=useState([false,false,false,false]);
   const pm=s.monsters.find(m=>m.id===s.party.main)||s.monsters[0];
-  const stats=pm?calcStats(pm, s.equipInventory, s.facilities):null;
+  const stats=pm?calcStats(pm, s.equipInventory, s.facilities, s.gems):null;
   // サブモンスターの実体取得
   const subMonsters=(s.party.subs||[]).map(sid=>sid?s.monsters.find(m=>m.id===sid)||null:null);
 
@@ -2517,7 +2640,7 @@ function QuestScreen({s,d}){
       const idx=R.current.activeIdx;
       const en=R.current.enemies[idx];
       if(!en||!en.alive)return;
-      const sSt = calcStats(sm, s.equipInventory, s.facilities);
+      const sSt = calcStats(sm, s.equipInventory, s.facilities, s.gems);
       let dmg=Math.max(1,Math.floor(sSt.atk*skVal)-Math.floor(en.def/2));
       dmg=Math.floor(dmg*(0.85+Math.random()*0.3));
       en.hp=Math.max(0,en.hp-dmg);
@@ -2527,7 +2650,7 @@ function QuestScreen({s,d}){
       setDmg({v:dmg,crit:false,who:'e',eIdx:idx});setTimeout(()=>setDmg(null),500*sp);
       setLog(p=>[...p.slice(-6),<span key={Date.now()+'_sk'}>{sk.icon} <b style={{color:sk.col}}>{sk.name}</b>{sm.skillLv>1?<sup style={{color:'#ffd700',fontSize:8}}>Lv{sm.skillLv}</sup>:''}！ {en.name} -{dmg}</span>]);
     } else if(sk.type==='aoe'){
-      const sSt=calcStats(sm,s.equipInventory,s.facilities);
+      const sSt=calcStats(sm,s.equipInventory,s.facilities,s.gems);
       let totalDmg=0;
       R.current.enemies.forEach(en=>{
         if(!en.alive)return;
@@ -2558,7 +2681,7 @@ function QuestScreen({s,d}){
       const idx=R.current.activeIdx;
       const en=R.current.enemies[idx];
       if(!en||!en.alive)return;
-      const sSt=calcStats(sm,s.equipInventory,s.facilities);
+      const sSt=calcStats(sm,s.equipInventory,s.facilities,s.gems);
       let dmg=Math.max(1,Math.floor(sSt.atk*skVal)-Math.floor(en.def/2));
       dmg=Math.floor(dmg*(0.85+Math.random()*0.3));
       en.hp=Math.max(0,en.hp-dmg);
@@ -3134,12 +3257,13 @@ function BagScreen({s,d,onUseNameplate}){
   const [tab,setTab]=useState('mat');
   const [equipSel,setEquipSel]=useState(null);
   const [equipPreview,setEquipPreview]=useState(null); // 装備差分プレビュー対象のID
+  const [gemSlotSel,setGemSlotSel]=useState(null); // 宝石スロット選択（color名 or null）
   const pm=s.monsters.find(m=>m.id===s.party.main)||s.monsters[0];
   const SLOTS=[['hat','頭🎩'],['acc','首💎'],['wpn','手⚔']];
   return <div style={{width:'100%',padding:14,animation:'fadeIn 0.4s ease-out'}}>
     <div style={{...CARD,marginBottom:12}}>
       <div style={{display:'flex',gap:5,alignItems:'center'}}>
-        {[['mat','🎒 素材'],['equip','⚔ 装備'],['fuse','⚗ 合成']].map(([k,l])=><button key={k} onClick={()=>setTab(k)} style={{...FF,flex:1,padding:'7px 0',borderRadius:12,border:'none',fontWeight:700,fontSize:11,cursor:'pointer',background:tab===k?'rgba(191,136,255,0.3)':'rgba(255,255,255,0.06)',color:tab===k?'#bf88ff':'rgba(255,255,255,0.45)'}}>{l}</button>)}
+        {[['mat','🎒 素材'],['equip','⚔ 装備'],['fuse','⚗ 合成'],['gem','💎 宝石']].map(([k,l])=><button key={k} onClick={()=>setTab(k)} style={{...FF,flex:1,padding:'7px 0',borderRadius:12,border:'none',fontWeight:700,fontSize:10,cursor:'pointer',background:tab===k?'rgba(191,136,255,0.3)':'rgba(255,255,255,0.06)',color:tab===k?'#bf88ff':'rgba(255,255,255,0.45)'}}>{l}</button>)}
       </div>
     </div>
     {tab==='mat'&&<div>
@@ -3200,11 +3324,11 @@ function BagScreen({s,d,onUseNameplate}){
         <div style={{fontSize:11,opacity:0.6,marginBottom:8}}>▼ {equipSel==='hat'?'頭':equipSel==='acc'?'首':'手'}装備を選ぶ（高Lv順／タップで差分プレビュー）</div>
         {(()=>{
           // 現在のステータス（基準）
-          const curStats=calcStats(pm,s.equipInventory,s.facilities);
+          const curStats=calcStats(pm,s.equipInventory,s.facilities,s.gems);
           // 装備差分プレビュー: 各装備に対して「装備した場合のステータス」を計算
           function previewWith(eqIdOrNull){
             const newPm={...pm,equip:{...pm.equip,[equipSel]:eqIdOrNull}};
-            return calcStats(newPm,s.equipInventory,s.facilities);
+            return calcStats(newPm,s.equipInventory,s.facilities,s.gems);
           }
           function fmtDelta(cur,nxt){
             const d=nxt-cur;
@@ -3273,6 +3397,47 @@ function BagScreen({s,d,onUseNameplate}){
           </>;
         })()}
       </div>}
+
+      {/* 宝石装備セクション */}
+      <div style={{...CARD,marginTop:12}}>
+        <div style={{fontSize:11,fontWeight:900,marginBottom:6,color:'#ffd700'}}>💎 宝石装備（5色）</div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:5}}>
+          {GEM_COLORS.map(color=>{
+            const gemId=pm.gems?.[color];
+            const gem=gemId?s.gems.find(g=>g.id===gemId):null;
+            const cc=GEM_COLOR_CSS[color];
+            const sel=gemSlotSel===color;
+            return <button key={color} onClick={()=>setGemSlotSel(sel?null:color)} style={{...FF,padding:'6px 3px',textAlign:'center',cursor:'pointer',borderRadius:10,border:`2px solid ${sel?'#ffd700':cc+'66'}`,background:gem?`${cc}22`:'rgba(255,255,255,0.04)'}}>
+              <div style={{fontSize:18,lineHeight:1}}>{gem?'💎':'➕'}</div>
+              <div style={{fontSize:7,color:cc,fontWeight:900,marginTop:2}}>{GEM_COLOR_NAME[color]}</div>
+              <div style={{fontSize:6,opacity:0.6,marginTop:1}}>{GEM_STAT_MAP[color].toUpperCase()}</div>
+              {gem&&<div style={{fontSize:8,color:'#ffd700',fontWeight:900,marginTop:1}}>★{gem.star}</div>}
+              {gem&&<div style={{fontSize:6,color:'#66bb6a',marginTop:1}}>+{GEM_STAR_BONUS[gem.star]}%</div>}
+            </button>;
+          })}
+        </div>
+        {gemSlotSel&&(()=>{
+          const equippedGemId=pm.gems?.[gemSlotSel];
+          const allEquipped=new Set();
+          s.monsters.forEach(m=>{Object.values(m.gems||{}).forEach(id=>{if(id)allEquipped.add(id);});});
+          // 同色かつ未装備(またはこのモンスターに装備中)の宝石
+          const avail=(s.gems||[]).filter(g=>g.color===gemSlotSel&&(!allEquipped.has(g.id)||g.id===equippedGemId)).sort((a,b)=>b.star-a.star);
+          return <div style={{marginTop:10,paddingTop:10,borderTop:'1px solid rgba(255,255,255,0.1)'}}>
+            <div style={{fontSize:10,opacity:0.7,marginBottom:6}}>▼ {GEM_COLOR_NAME[gemSlotSel]}（{GEM_STAT_MAP[gemSlotSel].toUpperCase()}）の宝石を選ぶ</div>
+            {equippedGemId&&<button onClick={()=>{d({type:'UNEQUIP_GEM',monsterId:pm.id,color:gemSlotSel});setGemSlotSel(null);}} style={{...FF,width:'100%',padding:'7px 0',borderRadius:10,border:'1px solid #ef535066',background:'rgba(239,83,80,0.08)',color:'#ef5350',cursor:'pointer',fontSize:11,fontWeight:700,marginBottom:8}}>外す</button>}
+            {avail.length===0?<div style={{textAlign:'center',padding:'14px',opacity:0.5,fontSize:10}}>装備可能な{GEM_COLOR_NAME[gemSlotSel]}がありません</div>:
+            <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:5,maxHeight:200,overflowY:'auto'}}>
+              {avail.map(g=>{const cc=GEM_COLOR_CSS[g.color];const isCurrent=g.id===equippedGemId;
+              return <button key={g.id} onClick={()=>{d({type:'EQUIP_GEM',monsterId:pm.id,gemId:g.id});setGemSlotSel(null);}} disabled={isCurrent} style={{...FF,padding:'7px 3px',textAlign:'center',cursor:isCurrent?'default':'pointer',borderRadius:9,border:`2px solid ${isCurrent?'#66bb6a':cc+'66'}`,background:isCurrent?`${cc}33`:`${cc}15`,opacity:isCurrent?0.7:1}}>
+                <div style={{fontSize:20}}>💎</div>
+                <div style={{fontSize:9,color:'#ffd700',fontWeight:900}}>★{g.star}</div>
+                <div style={{fontSize:7,opacity:0.7,marginTop:1}}>+{GEM_STAR_BONUS[g.star]}%</div>
+                {isCurrent&&<div style={{fontSize:7,color:'#66bb6a',marginTop:1}}>装備中</div>}
+              </button>;})}
+            </div>}
+          </div>;
+        })()}
+      </div>
     </div>}
     {tab==='fuse'&&<div>
       <div style={{...CARD,marginBottom:10,fontSize:11,opacity:0.7,lineHeight:1.6}}>
@@ -3333,6 +3498,115 @@ function BagScreen({s,d,onUseNameplate}){
         </div>;
       })()}
     </div>}
+    {tab==='gem'&&<GemTab s={s} d={d}/>}
+  </div>;
+}
+
+// ─── GEM TAB (宝石管理) ──────────────────────────────────
+function GemTab({s,d}){
+  const [mode,setMode]=useState('list'); // list | fuse
+  const [selA,setSelA]=useState(null);
+  const [selB,setSelB]=useState(null);
+  const gems=s.gems||[];
+  const gwLv=s.facilities?.gem_workshop?.lv||0;
+  const fuseUnlocked=gwLv>=1;
+  const autoUnlocked=gwLv>=3;
+  const equippedIds=new Set();
+  s.monsters.forEach(m=>{Object.values(m.gems||{}).forEach(id=>{if(id)equippedIds.add(id);});});
+  // 装備中数の表示
+  const equippedCount=equippedIds.size;
+  // 星別カウント
+  const starCount={};
+  gems.forEach(g=>{if(!equippedIds.has(g.id))starCount[g.star]=(starCount[g.star]||0)+1;});
+
+  function gemCard(g,onClick,selected){
+    const col=GEM_COLOR_CSS[g.color];
+    const eq=equippedIds.has(g.id);
+    return <button key={g.id} onClick={()=>!eq&&onClick&&onClick(g)} disabled={eq} style={{...FF,padding:'8px 4px',borderRadius:10,border:`2px solid ${selected?'#ffd700':col+'66'}`,background:selected?`${col}33`:`${col}15`,cursor:eq?'not-allowed':'pointer',opacity:eq?0.4:1,position:'relative',textAlign:'center'}}>
+      <div style={{fontSize:24,lineHeight:1}}>💎</div>
+      <div style={{fontSize:8,color:col,fontWeight:900,marginTop:2}}>{GEM_COLOR_NAME[g.color]}</div>
+      <div style={{fontSize:9,color:'#ffd700',fontWeight:900,marginTop:1,textShadow:'0 0 4px #ffd700'}}>★{g.star}</div>
+      <div style={{fontSize:7,opacity:0.7,marginTop:1}}>{GEM_STAT_MAP[g.color].toUpperCase()}+{GEM_STAR_BONUS[g.star]}%</div>
+      {eq&&<div style={{position:'absolute',top:2,right:2,fontSize:8,color:'#66bb6a'}}>装備中</div>}
+    </button>;
+  }
+
+  return <div>
+    <div style={{...CARD,marginBottom:10,padding:'10px 12px',background:'linear-gradient(135deg,rgba(255,215,0,0.08),rgba(191,136,255,0.06))',border:'1px solid rgba(255,215,0,0.3)'}}>
+      <div style={{fontSize:11,fontWeight:900,color:'#ffd700',marginBottom:4}}>💎 宝石</div>
+      <div style={{fontSize:10,opacity:0.8,lineHeight:1.5}}>
+        ★5(最大限界突破)モンスター売却時に入手。モンスターに5色(HP/ATK/DEF/SPD/LUK)装備可能。<br/>
+        同★同士の合成で★アップ。星が高いほど失敗確率増。
+      </div>
+    </div>
+
+    {/* モード切替 */}
+    {fuseUnlocked&&<div style={{display:'flex',gap:4,marginBottom:10,background:'rgba(255,255,255,0.04)',borderRadius:12,padding:3}}>
+      {[['list','📋 一覧'],['fuse','⚗ 合成']].map(([k,l])=>(
+        <button key={k} onClick={()=>{setMode(k);setSelA(null);setSelB(null);}} style={{...FF,flex:1,padding:'7px 0',borderRadius:10,border:'none',fontWeight:900,fontSize:11,cursor:'pointer',background:mode===k?'linear-gradient(135deg,#bf88ff,#ff9fcf)':'transparent',color:mode===k?'#fff':'rgba(255,255,255,0.5)'}}>{l}</button>
+      ))}
+    </div>}
+    {!fuseUnlocked&&<div style={{...CARD,marginBottom:10,padding:'10px 12px',fontSize:10,opacity:0.7,textAlign:'center',border:'1px dashed rgba(255,255,255,0.2)'}}>💡 宝石工房Lv1で合成解放 / Lv3で自動連続合成解放</div>}
+
+    {/* 一覧モード */}
+    {mode==='list'&&<>
+      {gems.length===0?<div style={{...CARD,textAlign:'center',padding:'30px 14px',opacity:0.5,fontSize:11}}>宝石がありません<br/>★5モンスターを売却して入手</div>:
+      <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:5,maxHeight:380,overflowY:'auto'}}>
+        {[...gems].sort((a,b)=>b.star-a.star||a.color.localeCompare(b.color)).map(g=>gemCard(g))}
+      </div>}
+      <div style={{fontSize:9,opacity:0.6,marginTop:8,textAlign:'center'}}>合計 {gems.length}個 / 装備中 {equippedCount}個</div>
+    </>}
+
+    {/* 合成モード */}
+    {mode==='fuse'&&<>
+      {/* 自動合成 (Lv3以上) */}
+      {autoUnlocked&&<div style={{...CARD,marginBottom:10,padding:'10px 12px',background:'linear-gradient(135deg,rgba(224,64,251,0.10),rgba(191,136,255,0.05))',border:'1px solid #e040fb66'}}>
+        <div style={{fontSize:11,fontWeight:900,color:'#e040fb',marginBottom:6}}>⚡ 自動連続合成</div>
+        <div style={{fontSize:9,opacity:0.7,marginBottom:8}}>同じ★の宝石を全てペアで合成（装備中除く）</div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:4}}>
+          {[1,2,3,4,5,6,7,8,9].map(st=>{const cnt=starCount[st]||0;const canFuse=cnt>=2;
+          return <button key={st} onClick={()=>canFuse&&d({type:'FUSE_GEMS_AUTO',star:st})} disabled={!canFuse} style={{...FF,padding:'6px 0',borderRadius:8,border:`1px solid ${canFuse?'#e040fb88':'rgba(255,255,255,0.1)'}`,background:canFuse?'rgba(224,64,251,0.12)':'rgba(255,255,255,0.03)',color:canFuse?'#e040fb':'rgba(255,255,255,0.3)',cursor:canFuse?'pointer':'not-allowed',fontSize:9,fontWeight:700}}>★{st}<br/><span style={{fontSize:7,opacity:0.7}}>{cnt}個</span></button>;})}
+        </div>
+      </div>}
+
+      {/* 手動合成 */}
+      <div style={{...CARD,marginBottom:10,padding:'10px 12px',background:'rgba(255,215,0,0.06)',border:'1px solid #ffd70044'}}>
+        <div style={{fontSize:11,fontWeight:900,color:'#ffd700',marginBottom:4}}>⚗ 手動合成</div>
+        <div style={{fontSize:9,opacity:0.7,marginBottom:6}}>同じ★の宝石を2個選んで合成</div>
+        <div style={{display:'flex',gap:6,alignItems:'center',justifyContent:'center',marginBottom:6}}>
+          <div style={{flex:1,minHeight:60,borderRadius:10,border:'2px dashed rgba(255,255,255,0.2)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,opacity:selA?1:0.4}}>
+            {selA?<span style={{color:GEM_COLOR_CSS[selA.color],fontWeight:900}}>💎 ★{selA.star}<br/>{GEM_COLOR_NAME[selA.color]}</span>:'1個目'}
+          </div>
+          <div style={{fontSize:18,opacity:0.5}}>+</div>
+          <div style={{flex:1,minHeight:60,borderRadius:10,border:'2px dashed rgba(255,255,255,0.2)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,opacity:selB?1:0.4}}>
+            {selB?<span style={{color:GEM_COLOR_CSS[selB.color],fontWeight:900}}>💎 ★{selB.star}<br/>{GEM_COLOR_NAME[selB.color]}</span>:'2個目'}
+          </div>
+        </div>
+        {selA&&selB&&selA.star===selB.star&&selA.star<10&&<div style={{textAlign:'center',marginBottom:6,fontSize:10}}>
+          成功率 <b style={{color:'#66bb6a'}}>{Math.round(GEM_FUSE_RATE[selA.star]*100)}%</b> → ★{selA.star+1}<br/>
+          <span style={{fontSize:9,opacity:0.7,color:'#ef5350'}}>失敗時: ★{Math.max(1,selA.star-1)} に降格</span>
+        </div>}
+        {selA&&selB&&selA.star!==selB.star&&<div style={{textAlign:'center',marginBottom:6,fontSize:10,color:'#ef5350'}}>⚠ 同じ★同士のみ合成可</div>}
+        {selA&&selB&&selA.star>=10&&<div style={{textAlign:'center',marginBottom:6,fontSize:10,color:'#ef5350'}}>⚠ ★10は最大値</div>}
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:5}}>
+          <button onClick={()=>{setSelA(null);setSelB(null);}} disabled={!selA&&!selB} style={{...FF,padding:'8px 0',borderRadius:10,border:'1px solid rgba(255,255,255,0.15)',background:'rgba(255,255,255,0.04)',color:'rgba(255,255,255,0.7)',cursor:(selA||selB)?'pointer':'default',fontSize:11,fontWeight:700}}>クリア</button>
+          <button onClick={()=>{d({type:'FUSE_GEMS',gemAId:selA.id,gemBId:selB.id});setSelA(null);setSelB(null);}} disabled={!selA||!selB||selA.star!==selB.star||selA.star>=10} style={{...FF,padding:'8px 0',borderRadius:10,border:'none',background:(selA&&selB&&selA.star===selB.star&&selA.star<10)?'linear-gradient(135deg,#ffd700,#ff9800)':'rgba(255,255,255,0.05)',color:(selA&&selB&&selA.star===selB.star&&selA.star<10)?'#1a0a00':'rgba(255,255,255,0.3)',cursor:(selA&&selB&&selA.star===selB.star&&selA.star<10)?'pointer':'default',fontSize:11,fontWeight:900}}>合成</button>
+        </div>
+      </div>
+
+      {/* 宝石グリッド (選択用) */}
+      {gems.length===0?<div style={{...CARD,textAlign:'center',padding:'20px 14px',opacity:0.5,fontSize:11}}>宝石がありません</div>:
+      <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:5,maxHeight:280,overflowY:'auto'}}>
+        {[...gems].sort((a,b)=>b.star-a.star||a.color.localeCompare(b.color)).map(g=>gemCard(g,(gem)=>{
+          if(equippedIds.has(gem.id))return;
+          if(selA&&selA.id===gem.id){setSelA(null);return;}
+          if(selB&&selB.id===gem.id){setSelB(null);return;}
+          if(!selA)setSelA(gem);
+          else if(!selB)setSelB(gem);
+          else setSelB(gem);
+        },selA?.id===g.id||selB?.id===g.id))}
+      </div>}
+    </>}
   </div>;
 }
 
@@ -3961,7 +4235,7 @@ function CollectionScreen({s,d}){
               }} title="名前を変更" style={{...FF,padding:'4px 8px',borderRadius:6,border:'1px solid rgba(255,255,255,0.25)',background:'rgba(191,136,255,0.15)',color:'#bf88ff',cursor:'pointer',fontSize:13,lineHeight:1,flexShrink:0,fontWeight:900}}>✏</button>
             </div>
             <div style={{display:'flex',gap:4,flexWrap:'wrap',margin:'4px 0'}}><Pill label={selMon.rarity} color={RC[selMon.rarity]}/>{selMon.lb>0&&<Pill label={`★${selMon.lb}/5`} color='#ff9800'/>}{(selMon.awaken||0)>0&&<Pill label={`覚醒★${selMon.awaken}`} color='#bf40ff'/>}<Pill label={`Lv${selMon.level}`} color='#42a5f5'/>{(selMon.skillLv||1)>1&&<Pill label={`スキルLv${selMon.skillLv}`} color='#ffd700'/>}</div>
-            {(()=>{const st=calcStats(selMon, s.equipInventory, s.facilities);return <div style={{fontSize:10,opacity:0.6}}>HP:{st.maxHp} ATK:{st.atk} DEF:{st.def} SPD:{st.spd} LUK:{st.luk}</div>})()}
+            {(()=>{const st=calcStats(selMon, s.equipInventory, s.facilities, s.gems);return <div style={{fontSize:10,opacity:0.6}}>HP:{st.maxHp} ATK:{st.atk} DEF:{st.def} SPD:{st.spd} LUK:{st.luk}</div>})()}
           </div>
         </div>
         {(()=>{const sk=SKILLS[MONS[selMon.type]?.skill];if(!sk)return null;
@@ -4194,7 +4468,7 @@ function PartyEditor({s,d,main,subs}){
             <div style={{flex:1,minWidth:0}}>
               <div style={{fontWeight:900,fontSize:14}}>{main.name}</div>
               <div style={{display:'flex',gap:4,flexWrap:'wrap',margin:'3px 0'}}><Pill label={main.rarity} color={RC[main.rarity]}/>{main.lb>0&&<Pill label={`★${main.lb}`} color='#ff9800'/>}<Pill label={`Lv${main.level}`} color='#42a5f5'/></div>
-              {(()=>{const st=calcStats(main,s.equipInventory,s.facilities);return <div style={{fontSize:9,opacity:0.6}}>HP:{st.maxHp} ATK:{st.atk} DEF:{st.def}</div>})()}
+              {(()=>{const st=calcStats(main,s.equipInventory,s.facilities,s.gems);return <div style={{fontSize:9,opacity:0.6}}>HP:{st.maxHp} ATK:{st.atk} DEF:{st.def}</div>})()}
             </div>
             <div style={{fontSize:18,opacity:0.6}}>🔄</div>
           </>
@@ -4256,7 +4530,7 @@ function PartyEditor({s,d,main,subs}){
     const sk=SKILLS[MONS[confirmMon.type]?.skill];
     const sl=confirmMon.skillLv||1;
     const curMul=1+(sl-1)*0.12;
-    const st=calcStats(confirmMon,s.equipInventory,s.facilities);
+    const st=calcStats(confirmMon,s.equipInventory,s.facilities,s.gems);
     const curRole=partyRoleOf(confirmMon.id);
     return <div onClick={()=>setConfirmMon(null)} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.75)',zIndex:1000,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
       <div onClick={e=>e.stopPropagation()} style={{...CARD,maxWidth:380,width:'100%',maxHeight:'85vh',overflow:'auto',padding:14}}>
@@ -4682,7 +4956,7 @@ function SellPanel({s,d}){
   function monPrice(m){
     const base=SELL_MON[m.rarity]||50;
     const mult=1+(m.level-1)*0.05+(m.lb||0)*0.3+(m.awaken||0)*0.5;
-    return Math.floor(base*mult);
+    return Math.min(1000,Math.floor(base*mult)); // 1体あたり最大1000G
   }
   function eqPrice(eq){
     const r=getEqRarity(eq);
