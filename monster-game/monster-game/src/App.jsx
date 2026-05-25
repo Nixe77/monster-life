@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v1.5.1"; // 昇格演出UR/LR限定・確率30%・純粋レア表示
+const APP_VERSION = "v1.6.0"; // 昇格演出180°回転+UR/LR差別化+LR虹色オーラ
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -3214,11 +3214,12 @@ function BagScreen({s,d,onUseNameplate}){
 
 // ─── COLLECTION SCREEN ───────────────────────────────────
 // ─── GACHA REVEAL（カードめくり演出） ───────────────────────
-// 裏面色を3段階に分類: 低レア(C,R) / 中レア(SR) / 高レア(UR,LR)
+// 裏面色を4段階に分類: 低レア(C,R) / 中レア(SR) / 高レア(UR) / 伝説(LR)
 function backColorOf(rarity){
   if(rarity==='C'||rarity==='R')return '#6b8cae';      // 低レア: 銀青
   if(rarity==='SR')return '#bf88ff';                    // 中レア: 紫
-  return '#ffd700';                                      // 高レア (UR, LR): 金
+  if(rarity==='UR')return '#ffd700';                    // 高レア: 金
+  return '#ff5b89';                                      // 伝説 (LR): 鮮やかピンク
 }
 
 function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDisabled}){
@@ -3241,14 +3242,15 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
 
   if(promoteSeqRef.current===null){
     // 初期化: UR/LRカードの30%を昇格対象に選定
-    // 裏面色は3段階（低=銀青/中=紫/高=金）なので、UR/LRは3段階で昇格演出
+    // UR: 3段階 (C → SR → UR)
+    // LR: 4段階 (C → SR → UR → LR) ← より派手
     const seq=results.map(r=>{
       if(kind!=='monster')return null; // 素材ガチャは昇格演出なし
       const idx=RO.indexOf(r.rarity);
       if(idx<3)return null; // C/R/SRは演出なし（UR以上のみ昇格演出対象）
       if(Math.random()>=0.30)return null; // 70%は通常表示
-      // UR/LR: 銀青→紫→金 (3段階)
-      return ['C','SR',r.rarity];
+      if(r.rarity==='LR')return ['C','SR','UR','LR']; // LRは4段階
+      return ['C','SR','UR']; // URは3段階
     });
     promoteSeqRef.current=seq;
   }
@@ -3309,8 +3311,8 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
 
     const tid=setTimeout(()=>{
       if(zoomStage<stageCount-1){
-        // 中間段階: 360°回転して次の裏面色へ
-        setZoomRotation(r2=>r2+360);
+        // 中間段階: 180°回転して裏面を切り替え（フリップ動作）
+        setZoomRotation(r2=>r2+180);
         setZoomStage(s=>s+1);
         setFlashKey(k=>k+1); // フラッシュ発火
       }else{
@@ -3352,6 +3354,15 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
     // 現在表示中の裏面レアリティ（zoomStageに連動）
     const currentBackRar=promoteSeq?promoteSeq[Math.min(zoomStage,promoteSeq.length-1)]:r.rarity;
     const bc=backColorOf(currentBackRar);
+    // 両面それぞれの色を段階に応じて算出
+    // 表側面(face A) = 偶数段階 (0, 2, 4...) で見える / 裏側面(face B) = 奇数段階 (1, 3, 5...) で見える
+    const seqArr=promoteSeq||[r.rarity];
+    const otherRar=seqArr[Math.min(zoomStage+1,seqArr.length-1)];
+    const isFaceAVisible=zoomStage%2===0;
+    const rarA=isFaceAVisible?currentBackRar:otherRar;
+    const rarB=isFaceAVisible?otherRar:currentBackRar;
+    const bcA=backColorOf(rarA);
+    const bcB=backColorOf(rarB);
     // バナー文言を判定
     const isLR=r.rarity==='LR';
     const bannerText=isLR ? (r.isNew?'✨ NEW LEGENDARY ✨':'🌟 LEGENDARY 🌟') : (r.isNew?'✨ NEW モンスター ✨':'⭐ レア排出 ⭐');
@@ -3359,10 +3370,24 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
     const pillColor=r.isNew?'#ff6b9d':'#6b8cae';
     // 昇格中バナー（中間段階の表示）
     const isMidStage=promoteSeq&&zoomStage<promoteSeq.length-1;
-    const promoBanner=isMidStage?(currentBackRar==='C'?'? 何が出る ?':currentBackRar==='SR'?'⭐ 昇格中... ⭐':'⭐⭐ さらに昇格! ⭐⭐'):null;
+    // バナー文言: 段階ごとに変化（LRは専用）
+    const promoBanner=isMidStage?(
+      currentBackRar==='C'?'? 何が出る ?':
+      currentBackRar==='SR'?'⭐ 昇格! ⭐':
+      currentBackRar==='UR'?(isLR?'🌟🌟 さらに上... 🌟🌟':'⭐⭐ さらに昇格!! ⭐⭐'):
+      '✨✨ LEGENDARY EVOLUTION ✨✨' // LR
+    ):null;
     // 段階上昇時の派手テキスト（zoomStage > 0 で表示）
-    const levelUpText=zoomStage>0&&!zoomFlipped?(currentBackRar==='SR'?'⚡ LEVEL UP! ⚡':'⚡⚡ MAX UP!! ⚡⚡'):null;
+    const levelUpText=zoomStage>0&&!zoomFlipped?(
+      currentBackRar==='SR'?'⚡ LEVEL UP! ⚡':
+      currentBackRar==='UR'?'⚡⚡ MAX UP!! ⚡⚡':
+      '🌈 LEGENDARY!! 🌈' // LR
+    ):null;
+    // LRかつ昇格演出 → 虹色オーラ等の追加エフェクトを有効化
+    const isLRPromote=isLR&&promoteSeq;
     return <div onClick={closeZoom} style={{position:'fixed',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:14,cursor:zoomFlipped?'pointer':'default',background:`radial-gradient(circle at center, ${bc}55 0%, rgba(10,2,25,0.97) 60%)`,backdropFilter:'blur(8px)',animation:'fadeIn 0.35s ease-out',zIndex:50,padding:14,transition:'background 0.7s',overflow:'hidden'}}>
+      {/* LR専用: 虹色背景オーラ */}
+      {isLRPromote&&<div style={{position:'absolute',inset:0,pointerEvents:'none',background:'conic-gradient(from 0deg, #ff5b89, #ff9800, #ffd700, #66bb6a, #42a5f5, #bf88ff, #ff5b89)',animation:'rotate 6s linear infinite',opacity:0.18,mixBlendMode:'screen'}}/>}
       {/* 放射状の光（フリップ後のみ表示） */}
       {zoomFlipped&&<div style={{position:'absolute',inset:0,pointerEvents:'none',background:`conic-gradient(from 0deg, transparent 0deg, ${col}44 10deg, transparent 20deg, transparent 40deg, ${col}33 50deg, transparent 60deg, transparent 90deg, ${col}55 100deg, transparent 110deg, transparent 140deg, ${col}33 150deg, transparent 160deg, transparent 180deg, ${col}44 190deg, transparent 200deg, transparent 230deg, ${col}33 240deg, transparent 250deg, transparent 280deg, ${col}55 290deg, transparent 300deg, transparent 330deg, ${col}44 340deg, transparent 350deg)`,animation:'rotate 8s linear infinite',opacity:0.55}}/>}
 
@@ -3383,25 +3408,50 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
       {/* LEVEL UP! テキスト（中間段階で出現） */}
       {levelUpText&&<div key={`lu${flashKey}`} style={{position:'absolute',top:'30%',left:'50%',fontSize:24,fontWeight:900,letterSpacing:2,color:bc,textShadow:`0 0 12px ${bc},0 0 24px ${bc},0 0 36px ${bc}aa,2px 2px 0 rgba(0,0,0,0.6)`,animation:'burstText 1s cubic-bezier(0.34,1.56,0.64,1) forwards',zIndex:4,pointerEvents:'none',whiteSpace:'nowrap'}}>{levelUpText}</div>}
 
-      {/* 拡大カード（多段階フリップ） */}
+      {/* 拡大カード（多段階フリップ・2面構造） */}
       <div style={{width:260,maxWidth:'82vw',aspectRatio:'2/3',perspective:'1000px',position:'relative',animation:'zoomInCard 0.55s cubic-bezier(0.34,1.56,0.64,1)',zIndex:2}}>
         <div key={`card${flashKey}`} style={{position:'absolute',inset:0,transformStyle:'preserve-3d',transition:'transform 0.7s cubic-bezier(0.34,1.56,0.64,1)',transform:`rotateY(${zoomRotation}deg)`,animation:flashKey>0&&!zoomFlipped?'cardShake 0.4s ease-in-out':'none'}}>
-          {/* 裏面（拡大版・段階に応じた色） */}
-          <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',transform:'translateZ(1px)',borderRadius:14,background:`linear-gradient(135deg,${bc}44 0%,#1a0533 50%,${bc}33 100%)`,border:`3px solid ${bc}`,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:`0 0 30px ${bc}aa,inset 0 0 24px ${bc}55`,transition:'all 0.5s ease',overflow:'hidden'}}>
-            {/* キラ星パーティクル（裏面でも常時光る） */}
-            {[0,1,2,3,4,5,6,7].map(k=><div key={k} style={{position:'absolute',top:`${10+Math.sin(k*1.9)*42}%`,left:`${8+Math.cos(k*2.3)*42}%`,fontSize:10+(k%3)*3,color:bc,opacity:0.6,animation:`twinkle ${1.2+k*0.18}s ease-in-out infinite`,textShadow:`0 0 6px ${bc}`}}>✦</div>)}
-            {/* 中心の大きな星 */}
-            <div style={{fontSize:80,color:bc,opacity:0.9,animation:'pulse 1.0s ease-in-out infinite',textShadow:`0 0 24px ${bc},0 0 48px ${bc}88`,transition:'color 0.5s ease,text-shadow 0.5s ease',zIndex:1}}>✦</div>
+          {/* 表側面 (faceA) - 偶数段階で表示、最終段階のrotation%360===0なら表面 */}
+          <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',transform:'translateZ(1px)',borderRadius:14,overflow:'hidden'}}>
+            {zoomFlipped&&(zoomRotation%360===0)?(
+              /* 表面コンテンツ (LR等の最終段階) */
+              <div style={{position:'absolute',inset:0,padding:'28px 20px',background:`linear-gradient(135deg,${mi.bg}66,rgba(255,255,255,0.04))`,border:`3px solid ${col}`,borderRadius:14,boxShadow:`0 0 36px ${col}cc, inset 0 0 18px ${col}33`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:8,overflow:'hidden'}}>
+                {[0,1,2,3,4,5].map(i=><div key={i} style={{position:'absolute',top:`${15+Math.sin(i*1.7)*40}%`,left:`${10+Math.cos(i*2.1)*38}%`,fontSize:14,color:col,opacity:0.7,animation:`twinkle ${1.4+i*0.2}s ease-in-out infinite`}}>✦</div>)}
+                <MonsterSprite type={r.type} size={110} anim="float"/>
+                <div style={{fontSize:20,fontWeight:900,color:mi.color}}>{mi.name}</div>
+                <div style={{display:'flex',justifyContent:'center',gap:6,flexWrap:'wrap'}}>
+                  <Pill label={r.rarity} color={col}/>
+                  <Pill label={pillLabel} color={pillColor}/>
+                </div>
+              </div>
+            ):(
+              /* 裏面 A (色 = rarA) */
+              <div style={{position:'absolute',inset:0,borderRadius:14,background:`linear-gradient(135deg,${bcA}44 0%,#1a0533 50%,${bcA}33 100%)`,border:`3px solid ${bcA}`,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:`0 0 30px ${bcA}aa,inset 0 0 24px ${bcA}55`,overflow:'hidden'}}>
+                {[0,1,2,3,4,5,6,7].map(k=><div key={k} style={{position:'absolute',top:`${10+Math.sin(k*1.9)*42}%`,left:`${8+Math.cos(k*2.3)*42}%`,fontSize:10+(k%3)*3,color:bcA,opacity:0.6,animation:`twinkle ${1.2+k*0.18}s ease-in-out infinite`,textShadow:`0 0 6px ${bcA}`}}>✦</div>)}
+                <div style={{fontSize:80,color:bcA,opacity:0.9,animation:'pulse 1.0s ease-in-out infinite',textShadow:`0 0 24px ${bcA},0 0 48px ${bcA}88`,zIndex:1}}>✦</div>
+              </div>
+            )}
           </div>
-          {/* 表面（拡大版・最終段階のみ表示 = 透け防止） */}
-          <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',transform:'rotateY(180deg) translateZ(1px)',borderRadius:14,padding:'28px 20px',background:`linear-gradient(135deg,${mi.bg}66,rgba(255,255,255,0.04))`,border:`3px solid ${col}`,boxShadow:`0 0 36px ${col}cc, inset 0 0 18px ${col}33`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:8,overflow:'hidden',opacity:zoomFlipped?1:0,transition:'opacity 0.3s ease 0.35s'}}>
-            {[0,1,2,3,4,5].map(i=><div key={i} style={{position:'absolute',top:`${15+Math.sin(i*1.7)*40}%`,left:`${10+Math.cos(i*2.1)*38}%`,fontSize:14,color:col,opacity:0.7,animation:`twinkle ${1.4+i*0.2}s ease-in-out infinite`}}>✦</div>)}
-            <MonsterSprite type={r.type} size={110} anim="float"/>
-            <div style={{fontSize:20,fontWeight:900,color:mi.color}}>{mi.name}</div>
-            <div style={{display:'flex',justifyContent:'center',gap:6,flexWrap:'wrap'}}>
-              <Pill label={r.rarity} color={col}/>
-              <Pill label={pillLabel} color={pillColor}/>
-            </div>
+          {/* 裏側面 (faceB) - 奇数段階で表示、最終段階のrotation%360===180なら表面 */}
+          <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',transform:'rotateY(180deg) translateZ(1px)',borderRadius:14,overflow:'hidden'}}>
+            {zoomFlipped&&(zoomRotation%360===180)?(
+              /* 表面コンテンツ (UR等の最終段階) */
+              <div style={{position:'absolute',inset:0,padding:'28px 20px',background:`linear-gradient(135deg,${mi.bg}66,rgba(255,255,255,0.04))`,border:`3px solid ${col}`,borderRadius:14,boxShadow:`0 0 36px ${col}cc, inset 0 0 18px ${col}33`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:8,overflow:'hidden'}}>
+                {[0,1,2,3,4,5].map(i=><div key={i} style={{position:'absolute',top:`${15+Math.sin(i*1.7)*40}%`,left:`${10+Math.cos(i*2.1)*38}%`,fontSize:14,color:col,opacity:0.7,animation:`twinkle ${1.4+i*0.2}s ease-in-out infinite`}}>✦</div>)}
+                <MonsterSprite type={r.type} size={110} anim="float"/>
+                <div style={{fontSize:20,fontWeight:900,color:mi.color}}>{mi.name}</div>
+                <div style={{display:'flex',justifyContent:'center',gap:6,flexWrap:'wrap'}}>
+                  <Pill label={r.rarity} color={col}/>
+                  <Pill label={pillLabel} color={pillColor}/>
+                </div>
+              </div>
+            ):(
+              /* 裏面 B (色 = rarB) */
+              <div style={{position:'absolute',inset:0,borderRadius:14,background:`linear-gradient(135deg,${bcB}44 0%,#1a0533 50%,${bcB}33 100%)`,border:`3px solid ${bcB}`,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:`0 0 30px ${bcB}aa,inset 0 0 24px ${bcB}55`,overflow:'hidden'}}>
+                {[0,1,2,3,4,5,6,7].map(k=><div key={k} style={{position:'absolute',top:`${10+Math.sin(k*1.9)*42}%`,left:`${8+Math.cos(k*2.3)*42}%`,fontSize:10+(k%3)*3,color:bcB,opacity:0.6,animation:`twinkle ${1.2+k*0.18}s ease-in-out infinite`,textShadow:`0 0 6px ${bcB}`}}>✦</div>)}
+                <div style={{fontSize:80,color:bcB,opacity:0.9,animation:'pulse 1.0s ease-in-out infinite',textShadow:`0 0 24px ${bcB},0 0 48px ${bcB}88`,zIndex:1}}>✦</div>
+              </div>
+            )}
           </div>
         </div>
       </div>
