@@ -3278,8 +3278,9 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
       const i=nextIdxRef.current;
       if(i>=results.length){setDone(true);return;}
       const r=results[i];
-      // モンスターガチャ＆新規取得 → ズームイン演出（先に該当カードへ寄ってからめくる）
-      if(kind==='monster'&&r.isNew){
+      // モンスターガチャ＆（新規取得 or LR）→ ズームイン演出
+      // LRは取得済みでも特別演出を出す（既所持なら「取得済み」ピル表示）
+      if(kind==='monster'&&(r.isNew||r.rarity==='LR')){
         setZoomIdx(i);
         return;
       }
@@ -3327,11 +3328,19 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
   function renderZoomOverlay(){
     if(zoomIdx===null||kind!=='monster')return null;
     const r=results[zoomIdx];const mi=MONS[r.type];const col=RC[r.rarity]||'#fff';
+    // バナー文言を判定
+    // 1. 新規LR: 最高潮の演出（NEW LEGENDARY）
+    // 2. 既所持LR: LEGENDARY演出（取得済み）
+    // 3. 新規UR以下: NEW モンスター
+    const isLR=r.rarity==='LR';
+    const bannerText=isLR ? (r.isNew?'✨ NEW LEGENDARY ✨':'🌟 LEGENDARY 🌟') : '✨ NEW モンスター ✨';
+    const pillLabel=r.isNew?'NEW!':'取得済み';
+    const pillColor=r.isNew?'#ff6b9d':'#6b8cae';
     return <div onClick={closeZoom} style={{position:'fixed',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:14,cursor:zoomFlipped?'pointer':'default',background:`radial-gradient(circle at center, ${col}66 0%, rgba(10,2,25,0.97) 60%)`,backdropFilter:'blur(8px)',animation:'fadeIn 0.35s ease-out',zIndex:50,padding:14}}>
       {/* 放射状の光（フリップ後のみ表示） */}
       {zoomFlipped&&<div style={{position:'absolute',inset:0,pointerEvents:'none',background:`conic-gradient(from 0deg, transparent 0deg, ${col}44 10deg, transparent 20deg, transparent 40deg, ${col}33 50deg, transparent 60deg, transparent 90deg, ${col}55 100deg, transparent 110deg, transparent 140deg, ${col}33 150deg, transparent 160deg, transparent 180deg, ${col}44 190deg, transparent 200deg, transparent 230deg, ${col}33 240deg, transparent 250deg, transparent 280deg, ${col}55 290deg, transparent 300deg, transparent 330deg, ${col}44 340deg, transparent 350deg)`,animation:'rotate 8s linear infinite',opacity:0.55}}/>}
-      {/* NEW バナー（フリップ後に表示） */}
-      {zoomFlipped&&<div style={{fontSize:13,fontWeight:900,letterSpacing:3,color:col,background:'rgba(0,0,0,0.5)',padding:'6px 18px',borderRadius:20,border:`2px solid ${col}`,boxShadow:`0 0 24px ${col}aa`,animation:'glow 1.5s ease-in-out infinite',zIndex:2}}>✨ NEW モンスター ✨</div>}
+      {/* バナー（フリップ後に表示） */}
+      {zoomFlipped&&<div style={{fontSize:13,fontWeight:900,letterSpacing:3,color:col,background:'rgba(0,0,0,0.5)',padding:'6px 18px',borderRadius:20,border:`2px solid ${col}`,boxShadow:`0 0 24px ${col}aa`,animation:'glow 1.5s ease-in-out infinite',zIndex:2}}>{bannerText}</div>}
 
       {/* 拡大カード（裏→表のフリップを内側で再現） */}
       <div style={{width:260,maxWidth:'82vw',aspectRatio:'2/3',perspective:'1000px',position:'relative',animation:'zoomInCard 0.55s cubic-bezier(0.34,1.56,0.64,1)',zIndex:2}}>
@@ -3349,7 +3358,7 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
             <div style={{fontSize:20,fontWeight:900,color:mi.color}}>{mi.name}</div>
             <div style={{display:'flex',justifyContent:'center',gap:6,flexWrap:'wrap'}}>
               <Pill label={r.rarity} color={col}/>
-              <Pill label='NEW!' color='#ff6b9d'/>
+              <Pill label={pillLabel} color={pillColor}/>
             </div>
           </div>
         </div>
