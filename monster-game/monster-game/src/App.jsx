@@ -90,6 +90,8 @@ const CSS = `
   @keyframes coinPop{ 0%{transform:translate(-50%,-50%);opacity:1} 100%{transform:translate(-50%,-200%);opacity:0} }
   @keyframes levelUp{ 0%{transform:scale(0);opacity:0} 60%{transform:scale(1.4)} 100%{transform:scale(1);opacity:1} }
   @keyframes pulse  { 0%,100%{transform:scale(1)} 50%{transform:scale(1.06)} }
+  @keyframes rotate { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+  @keyframes twinkle{ 0%,100%{opacity:0.3;transform:scale(0.8)} 50%{opacity:1;transform:scale(1.4)} }
 `;
 
 // ─── MONSTER SPRITES ──────────────────────────────────────
@@ -1352,18 +1354,22 @@ function reducer(s,a){
       const cost=a.n===10?900:100;if(s.coins<cost)return{...s,toast:'コインが足りない！'};
       const pulled=Array.from({length:a.n},()=>POOL[Math.floor(Math.random()*POOL.length)]);
       let mons=[...s.monsters];const results=[];
+      // 既所持タイプを記録（演出用：その種を初めて取得したか判定）
+      const ownedTypesBefore=new Set(s.monsters.map(m=>m.type));
       // 重複時は自動で限界突破（★5未満の同種があればLB、無ければ新規追加）
       for(const type of pulled){
+        const isNewType=!ownedTypesBefore.has(type);
         const dup=mons.find(m=>m.type===type&&m.lb<5);
         if(dup){
           const nlb=Math.min(5,dup.lb+1);
           const nr=(nlb===3||nlb===5)&&RO.indexOf(dup.rarity)<4?RO[RO.indexOf(dup.rarity)+1]:dup.rarity;
           mons=mons.map(m=>m.id===dup.id?{...m,lb:nlb,rarity:nr}:m);
-          results.push({type,isLB:true,rarity:nr,lb:nlb});
+          results.push({type,isLB:true,rarity:nr,lb:nlb,isNew:false});
         }else{
           const nm={...mkMon(type,Date.now()+Math.random()*9999)};
           mons.push(nm);
-          results.push({type,isLB:false,rarity:MONS[type].rarity,lb:0});
+          ownedTypesBefore.add(type); // 同じ抽選内で2体目以降は既所持扱い
+          results.push({type,isLB:false,rarity:MONS[type].rarity,lb:0,isNew:isNewType});
         }
       }
       return{...s,coins:s.coins-cost,monsters:mons,gacha:{results,idx:0}};
@@ -3193,6 +3199,173 @@ function BagScreen({s,d,onUseNameplate}){
 }
 
 // ─── COLLECTION SCREEN ───────────────────────────────────
+// ─── GACHA REVEAL（カードめくり演出） ───────────────────────
+function GachaReveal({kind,results,onDone}){
+  // kind: 'monster' | 'material'
+  // flipped[i]: 各カードが裏返り済みか
+  const [flipped,setFlipped]=useState(()=>results.map(()=>false));
+  // zoomIdx: 新規取得演出中のカードindex（null=演出なし）
+  const [zoomIdx,setZoomIdx]=useState(null);
+  // 全めくり終了済みか
+  const [done,setDone]=useState(false);
+  // めくり速度
+  const flipInterval=kind==='monster'?420:200;
+  // 累積カウンタ
+  const nextIdxRef=useRef(0);
+  const timerRef=useRef(null);
+
+  // 自動めくり
+  useEffect(()=>{
+    if(zoomIdx!==null||done)return;
+    timerRef.current=setTimeout(()=>{
+      const i=nextIdxRef.current;
+      if(i>=results.length){setDone(true);return;}
+      const r=results[i];
+      // モンスターガチャ＆新規取得 → 拡大演出
+      if(kind==='monster'&&r.isNew){
+        setFlipped(prev=>{const a=[...prev];a[i]=true;return a;});
+        setZoomIdx(i);
+        return;
+      }
+      // 通常めくり
+      setFlipped(prev=>{const a=[...prev];a[i]=true;return a;});
+      nextIdxRef.current=i+1;
+    },flipInterval);
+    return()=>clearTimeout(timerRef.current);
+  },[flipped,zoomIdx,done]);
+
+  // 拡大演出のクローズ
+  function closeZoom(){
+    if(zoomIdx===null)return;
+    nextIdxRef.current=zoomIdx+1;
+    setZoomIdx(null);
+  }
+
+  // 全部一気にめくる（スキップ）
+  function skipAll(){
+    if(zoomIdx!==null)return; // 拡大中はスキップ不可
+    setFlipped(results.map(()=>true));
+    nextIdxRef.current=results.length;
+    setDone(true);
+  }
+
+  // レイアウト: 10連=2行5列、1連=1枚中央
+  const cols=results.length>=5?5:results.length;
+  const rows=Math.ceil(results.length/cols);
+
+  // 拡大演出（モンスターのみ）
+  if(zoomIdx!==null&&kind==='monster'){
+    const r=results[zoomIdx];const mi=MONS[r.type];const col=RC[r.rarity]||'#fff';
+    return <div onClick={closeZoom} style={{width:'100%',minHeight:'100vh',padding:14,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:14,cursor:'pointer',background:`radial-gradient(circle at center, ${col}44 0%, rgba(20,5,45,0.95) 70%)`,animation:'fadeIn 0.4s ease-out'}}>
+      {/* 放射状の光 */}
+      <div style={{position:'fixed',inset:0,pointerEvents:'none',background:`conic-gradient(from 0deg, transparent 0deg, ${col}44 10deg, transparent 20deg, transparent 40deg, ${col}33 50deg, transparent 60deg, transparent 90deg, ${col}55 100deg, transparent 110deg, transparent 140deg, ${col}33 150deg, transparent 160deg, transparent 180deg, ${col}44 190deg, transparent 200deg, transparent 230deg, ${col}33 240deg, transparent 250deg, transparent 280deg, ${col}55 290deg, transparent 300deg, transparent 330deg, ${col}44 340deg, transparent 350deg)`,animation:'rotate 8s linear infinite',opacity:0.6}}/>
+      {/* 派手な新規取得バナー */}
+      <div style={{fontSize:13,fontWeight:900,letterSpacing:3,color:col,background:'rgba(0,0,0,0.4)',padding:'6px 18px',borderRadius:20,border:`2px solid ${col}`,boxShadow:`0 0 24px ${col}aa`,animation:'glow 1.5s ease-in-out infinite',zIndex:2}}>✨ NEW モンスター ✨</div>
+      {/* 拡大カード */}
+      <div style={{...CARD,padding:'28px 20px',width:260,maxWidth:'90vw',background:`linear-gradient(135deg,${mi.bg}66,rgba(255,255,255,0.04))`,border:`3px solid ${col}`,boxShadow:`0 0 36px ${col}cc, inset 0 0 18px ${col}33`,animation:'pop 0.55s cubic-bezier(0.34,1.56,0.64,1)',position:'relative',zIndex:2}}>
+        {/* キラ星 */}
+        {[0,1,2,3,4,5].map(i=><div key={i} style={{position:'absolute',top:`${15+Math.sin(i*1.7)*40}%`,left:`${10+Math.cos(i*2.1)*38}%`,fontSize:14,color:col,opacity:0.7,animation:`twinkle ${1.4+i*0.2}s ease-in-out infinite`}}>✦</div>)}
+        <MonsterSprite type={r.type} size={120} anim="float"/>
+        <div style={{marginTop:14,fontSize:22,fontWeight:900,color:mi.color}}>{mi.name}</div>
+        <div style={{marginTop:8,display:'flex',justifyContent:'center',gap:6,flexWrap:'wrap'}}>
+          <Pill label={r.rarity} color={col}/>
+          <Pill label='NEW!' color='#ff6b9d'/>
+        </div>
+      </div>
+      <div style={{fontSize:11,opacity:0.6,zIndex:2}}>タップで続ける →</div>
+    </div>;
+  }
+
+  // 終了画面（サマリー）
+  if(done){
+    // レアリティ別集計
+    const summary={};
+    if(kind==='monster'){
+      let newCount=0,lbCount=0;
+      results.forEach(r=>{summary[r.rarity]=(summary[r.rarity]||0)+1;if(r.isNew)newCount++;if(r.isLB)lbCount++;});
+      return <div style={{width:'100%',padding:14,textAlign:'center',animation:'fadeIn 0.4s ease-out'}}>
+        <div style={{fontSize:22,fontWeight:900,background:'linear-gradient(90deg,#bf88ff,#ff6b9d)',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent',marginBottom:6}}>✨ 結果 ✨</div>
+        <div style={{fontSize:11,opacity:0.65,marginBottom:14}}>{results.length}連の戦果</div>
+        <div style={{...CARD,padding:'16px 14px',marginBottom:10}}>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:6,marginBottom:10}}>
+            {RO.map(rar=>(
+              <div key={rar} style={{background:`${RC[rar]}18`,border:`1px solid ${RC[rar]}66`,borderRadius:8,padding:'7px 0',fontSize:10,fontWeight:900,color:RC[rar]}}>
+                {rar}<br/><span style={{fontSize:13}}>×{summary[rar]||0}</span>
+              </div>
+            ))}
+          </div>
+          <div style={{display:'flex',justifyContent:'center',gap:8,flexWrap:'wrap',marginTop:6,paddingTop:8,borderTop:'1px solid rgba(255,255,255,0.06)'}}>
+            {newCount>0&&<div style={{background:'rgba(255,107,157,0.15)',border:'1px solid #ff6b9d',borderRadius:10,padding:'5px 12px',fontSize:11,fontWeight:900,color:'#ff6b9d'}}>✨ 新規 ×{newCount}</div>}
+            {lbCount>0&&<div style={{background:'rgba(255,152,0,0.15)',border:'1px solid #ff9800',borderRadius:10,padding:'5px 12px',fontSize:11,fontWeight:900,color:'#ff9800'}}>⭐ 限界突破 ×{lbCount}</div>}
+          </div>
+        </div>
+        <Btn onClick={onDone} color='linear-gradient(135deg,#bf88ff,#ff6b9d)'>✨ 結果を確認した</Btn>
+      </div>;
+    }else{
+      // 素材集計
+      const matSum={};let jackpot=0;
+      results.forEach(r=>{matSum[r.item]=(matSum[r.item]||0)+r.qty;if(r.rarity==='LR'||r.rarity==='UR')jackpot++;});
+      return <div style={{width:'100%',padding:14,textAlign:'center',animation:'fadeIn 0.4s ease-out'}}>
+        <div style={{fontSize:22,fontWeight:900,background:'linear-gradient(90deg,#ffd700,#ff9800)',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent',marginBottom:6}}>📜 結果 📜</div>
+        <div style={{fontSize:11,opacity:0.65,marginBottom:14}}>{results.length}連の戦果</div>
+        <div style={{...CARD,padding:'16px 14px',marginBottom:10}}>
+          <div style={{display:'flex',justifyContent:'center',gap:14,marginBottom:10,flexWrap:'wrap'}}>
+            {Object.entries(matSum).map(([item,qty])=>{
+              const info=ITEMS[item];if(!info)return null;
+              return <div key={item} style={{textAlign:'center'}}>
+                <div style={{fontSize:36}}>{item==='skill_stone'?'📜':'💠'}</div>
+                <div style={{fontSize:10,fontWeight:700,marginTop:2}}>{info.name}</div>
+                <div style={{fontSize:13,fontWeight:900,color:'#ffd700'}}>×{qty}</div>
+              </div>;
+            })}
+          </div>
+          {jackpot>0&&<div style={{paddingTop:8,borderTop:'1px solid rgba(255,255,255,0.06)'}}>
+            <div style={{display:'inline-block',background:'rgba(255,215,0,0.15)',border:'1px solid #ffd700',borderRadius:10,padding:'5px 12px',fontSize:11,fontWeight:900,color:'#ffd700'}}>🌟 高レア ×{jackpot}</div>
+          </div>}
+        </div>
+        <Btn onClick={onDone} color='linear-gradient(135deg,#ffd700,#ff9800)' text='#1a0533'>✨ 結果を確認した</Btn>
+      </div>;
+    }
+  }
+
+  // めくり中の画面
+  return <div style={{width:'100%',padding:14,animation:'fadeIn 0.4s ease-out'}}>
+    <div style={{textAlign:'center',marginBottom:14}}>
+      <div style={{fontSize:14,fontWeight:900,letterSpacing:1,background:kind==='monster'?'linear-gradient(90deg,#bf88ff,#ff6b9d)':'linear-gradient(90deg,#ffd700,#ff9800)',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent'}}>
+        {kind==='monster'?'✨ ガチャ召喚 ✨':'📜 素材ガチャ 📜'}
+      </div>
+      <div style={{fontSize:10,opacity:0.5,marginTop:3}}>{flipped.filter(Boolean).length}/{results.length} 開封中</div>
+    </div>
+    <div style={{display:'grid',gridTemplateColumns:`repeat(${cols},1fr)`,gap:8,marginBottom:14}}>
+      {results.map((r,i)=>{
+        const col=RC[r.rarity]||'#fff';
+        const flippedI=flipped[i];
+        return <div key={i} style={{aspectRatio:'2/3',perspective:'600px',position:'relative'}}>
+          <div style={{position:'absolute',inset:0,transformStyle:'preserve-3d',transition:'transform 0.55s cubic-bezier(0.34,1.56,0.64,1)',transform:flippedI?'rotateY(180deg)':'rotateY(0deg)'}}>
+            {/* 裏面 */}
+            <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',borderRadius:8,background:'linear-gradient(135deg,#1a0533 0%,#2d1054 50%,#1a0533 100%)',border:'1.5px solid rgba(191,136,255,0.4)',display:'flex',alignItems:'center',justifyContent:'center',boxShadow:'0 2px 8px rgba(0,0,0,0.3),inset 0 0 14px rgba(191,136,255,0.15)'}}>
+              <div style={{fontSize:22,color:'rgba(191,136,255,0.5)'}}>✦</div>
+            </div>
+            {/* 表面 */}
+            <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',borderRadius:8,transform:'rotateY(180deg)',background:kind==='monster'?`linear-gradient(135deg,${MONS[r.type]?.bg||col}44,${col}22)`:`linear-gradient(135deg,${col}33,${col}11)`,border:`2px solid ${col}`,boxShadow:`0 0 10px ${col}77,inset 0 0 8px ${col}33`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:4,overflow:'hidden'}}>
+              {kind==='monster'?<>
+                <MonsterSprite type={r.type} size={40} anim="none"/>
+                <div style={{fontSize:8,fontWeight:900,color:col,marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:'100%'}}>{MONS[r.type]?.name}</div>
+                {r.isLB&&<div style={{fontSize:7,color:'#ff9800',fontWeight:900,marginTop:1}}>★{r.lb}</div>}
+              </>:<>
+                <div style={{fontSize:30}}>{r.item==='skill_stone'?'📜':'💠'}</div>
+                <div style={{fontSize:8,fontWeight:900,color:col,marginTop:2}}>×{r.qty}</div>
+                <div style={{fontSize:7,opacity:0.7,marginTop:1}}>{r.rarity}</div>
+              </>}
+            </div>
+          </div>
+        </div>;
+      })}
+    </div>
+    <button onClick={skipAll} disabled={zoomIdx!==null} style={{...FF,width:'100%',padding:'10px 0',borderRadius:11,border:'1px solid rgba(255,255,255,0.15)',background:'rgba(255,255,255,0.05)',color:'rgba(255,255,255,0.7)',cursor:zoomIdx!==null?'default':'pointer',fontSize:11,fontWeight:700}}>⏭ 全てめくる</button>
+  </div>;
+}
+
 // ─── GACHA SCREEN ────────────────────────────────────────
 function GachaScreen({s,d}){
   const [spin,setSpin]=useState(false);
@@ -3202,44 +3375,14 @@ function GachaScreen({s,d}){
   const gr=s.gacha;
   const mgr=s.matGacha;
 
-  // モンスターガチャ結果表示
+  // モンスターガチャ結果表示 → カードめくり演出
   if(gr){
-    const r=gr.results[gr.idx];const mi=MONS[r.type];
-    return <div style={{width:'100%',padding:14,textAlign:'center',animation:'fadeIn 0.3s ease-out'}}>
-      <div style={{fontSize:11,opacity:0.45,marginBottom:6}}>{gr.idx+1}/{gr.results.length}</div>
-      <div style={{...CARD,padding:32,marginBottom:14,background:`linear-gradient(135deg,${mi.bg}33,rgba(255,255,255,0.04))`,border:`2px solid ${RC[r.rarity]}`,animation:'pop 0.5s ease-out'}}>
-        {r.isLB&&<div style={{fontSize:12,color:'#ff9800',fontWeight:900,marginBottom:8,animation:'glow 1.5s ease-in-out infinite'}}>✨ 自動限界突破！</div>}
-        <MonsterSprite type={r.type} size={88} anim="float"/>
-        <div style={{marginTop:12,fontSize:20,fontWeight:900,color:mi.color}}>{mi.name}</div>
-        <div style={{marginTop:6,display:'flex',justifyContent:'center',gap:6,flexWrap:'wrap'}}>
-          <Pill label={r.rarity} color={RC[r.rarity]}/>
-          {r.isLB&&<Pill label={`★${r.lb}`} color='#ff9800'/>}
-        </div>
-      </div>
-      <Btn onClick={()=>gr.idx+1<gr.results.length?d({type:'GACHA_NEXT'}):d({type:'GACHA_DONE'})} color='linear-gradient(135deg,#bf88ff,#ff6b9d)'>{gr.idx+1<gr.results.length?'つぎへ →':'✨ おわり'}</Btn>
-    </div>;
+    return <GachaReveal kind='monster' results={gr.results} onDone={()=>d({type:'GACHA_DONE'})}/>;
   }
 
-  // 素材ガチャ結果表示
+  // 素材ガチャ結果表示 → カードめくり演出（速め、初取得演出なし）
   if(mgr){
-    const r=mgr.results[mgr.idx];
-    const isJackpot=r.rarity==='LR'||r.rarity==='UR';
-    return <div style={{width:'100%',padding:14,textAlign:'center',animation:'fadeIn 0.3s ease-out'}}>
-      <div style={{fontSize:11,opacity:0.45,marginBottom:6}}>{mgr.idx+1}/{mgr.results.length}</div>
-      <div style={{...CARD,padding:32,marginBottom:14,background:`linear-gradient(135deg,${RC[r.rarity]}22,rgba(255,255,255,0.04))`,border:`2px solid ${RC[r.rarity]}`,animation:'pop 0.5s ease-out'}}>
-        {isJackpot&&<div style={{fontSize:12,color:'#ffd700',fontWeight:900,marginBottom:8,animation:'glow 1.5s ease-in-out infinite'}}>{r.rarity==='LR'?'🌟 大当たり！':'✨ レア排出！'}</div>}
-        <div style={{fontSize:60,marginBottom:8,animation:'float 1.4s ease-in-out infinite'}}>
-          {r.item==='skill_stone'?'📜':'💠'}
-        </div>
-        <div style={{fontSize:11,opacity:0.65}}>×{r.qty}</div>
-        <div style={{marginTop:8,fontSize:18,fontWeight:900,color:RC[r.rarity]}}>{ITEMS[r.item]?.name}</div>
-        <div style={{marginTop:6,display:'flex',justifyContent:'center',gap:6}}>
-          <Pill label={r.rarity} color={RC[r.rarity]}/>
-          <Pill label={`×${r.qty}`} color='#ffd700'/>
-        </div>
-      </div>
-      <Btn onClick={()=>mgr.idx+1<mgr.results.length?d({type:'MAT_GACHA_NEXT'}):d({type:'MAT_GACHA_DONE'})} color='linear-gradient(135deg,#ffd700,#ff9800)' text='#1a0533'>{mgr.idx+1<mgr.results.length?'つぎへ →':'✨ おわり'}</Btn>
-    </div>;
+    return <GachaReveal kind='material' results={mgr.results} onDone={()=>d({type:'MAT_GACHA_DONE'})}/>;
   }
 
   // 確率計算
