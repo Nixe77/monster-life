@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v1.8.5"; // 裏面装飾を最初のシンプル版に戻す
+const APP_VERSION = "v1.8.6"; // LR演出時のカード圧縮防止 (flexShrink:0)
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -3562,8 +3562,8 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
       {/* LEVEL UP! テキスト（中間段階で出現） */}
       {levelUpText&&<div key={`lu${flashKey}`} style={{position:'absolute',top:'30%',left:'50%',fontSize:24,fontWeight:900,letterSpacing:2,color:bc,textShadow:`0 0 12px ${bc},0 0 24px ${bc},0 0 36px ${bc}aa,2px 2px 0 rgba(0,0,0,0.6)`,animation:'burstText 1s cubic-bezier(0.34,1.56,0.64,1) forwards',zIndex:4,pointerEvents:'none',whiteSpace:'nowrap'}}>{levelUpText}</div>}
 
-      {/* 拡大カード（多段階フリップ・2面構造） */}
-      <div style={{width:260,maxWidth:'82vw',aspectRatio:'2/3',perspective:'1000px',position:'relative',animation:'zoomInCard 0.55s cubic-bezier(0.34,1.56,0.64,1)',zIndex:2}}>
+      {/* 拡大カード（多段階フリップ・2面構造、flex圧縮防止） */}
+      <div style={{width:260,maxWidth:'82vw',aspectRatio:'2/3',perspective:'1000px',position:'relative',animation:'zoomInCard 0.55s cubic-bezier(0.34,1.56,0.64,1)',zIndex:2,flexShrink:0}}>
         <div style={{position:'absolute',inset:0,transformStyle:'preserve-3d',transition:'transform 0.7s cubic-bezier(0.34,1.56,0.64,1)',transform:`rotateY(${zoomRotation}deg)`}}>
           {/* 表側面 (faceA) - 偶数段階で表示、最終段階のrotation%360===0なら表面 */}
           <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',transform:'translateZ(1px)',borderRadius:14,overflow:'hidden'}}>
