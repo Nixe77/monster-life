@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v2.0.3"; // ★9→10成功率を1%に(★10は超レア)
+const APP_VERSION = "v2.0.4"; // ホームの編成情報とステータスを1カード統合+スケール動的化
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -2196,8 +2196,6 @@ function HomeScreen({s,d}){
 
   if(!pm)return null;
   const st=calcStats(pm, s.equipInventory, s.facilities, s.gems);const mi=MONS[pm.type];
-  const STAT_DEFS=[['HP',st.maxHp,'#ef5350'],['ATK',st.atk,'#ff7043'],['DEF',st.def,'#42a5f5'],['SPD',st.spd,'#66bb6a'],['LUK',st.luk,'#ab47bc']];
-  const MAX_S=120;
   const listedKeys=new Set(s.shop.listings.map(l=>l.itemKey));
   const hasMat=Object.values(s.materials).some(v=>v>0);
   const totalVal=s.shop.listings.reduce((a,l)=>a+l.qty*l.price,0);
@@ -2219,18 +2217,43 @@ function HomeScreen({s,d}){
       <canvas ref={cvRef} width={200} height={160} style={{width:'100%',display:'block',imageRendering:'pixelated'}}/>
     </div>
 
-    {/* 編成モンスター情報 */}
-    <div style={{...CARD,marginBottom:10,padding:12,background:`linear-gradient(135deg,${mi.bg}22,rgba(255,255,255,0.04))`,display:'flex',gap:10,alignItems:'center'}}>
-      <EquippedMonster monster={pm} size={56} anim="float"/>
-      <div style={{flex:1,minWidth:0}}>
-        <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:3}}>
-          <span style={{fontWeight:900,fontSize:14,color:mi.color}}>{pm.name}</span>
-          <Pill label={pm.rarity} color={RC[pm.rarity]}/>
-          {pm.lb>0&&<Pill label={`★${pm.lb}`} color='#ff9800'/>}
-          <Pill label={`Lv.${pm.level}`} color='#42a5f5'/>
+    {/* 編成モンスター情報＋ステータス（統合カード、スケール改善） */}
+    <div style={{...CARD,marginBottom:10,padding:12,background:`linear-gradient(135deg,${mi.bg}22,rgba(255,255,255,0.04))`}}>
+      {/* 上段: モンスター情報 */}
+      <div style={{display:'flex',gap:10,alignItems:'center',marginBottom:10,paddingBottom:10,borderBottom:'1px solid rgba(255,255,255,0.08)'}}>
+        <EquippedMonster monster={pm} size={56} anim="float"/>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{display:'flex',gap:5,alignItems:'center',marginBottom:3,flexWrap:'wrap'}}>
+            <span style={{fontWeight:900,fontSize:14,color:mi.color}}>{pm.name}</span>
+            <Pill label={pm.rarity} color={RC[pm.rarity]}/>
+            {pm.lb>0&&<Pill label={`★${pm.lb}`} color='#ff9800'/>}
+            <Pill label={`Lv.${pm.level}`} color='#42a5f5'/>
+          </div>
+          <Bar val={pm.xp} max={100*pm.level} color='#bf88ff' label={`EXP ${pm.xp}/${100*pm.level}`}/>
         </div>
-        <Bar val={pm.xp} max={100*pm.level} color='#bf88ff' label={`EXP ${pm.xp}/${100*pm.level}`}/>
       </div>
+      {/* 中段: HP 横長バー（数値メインで500超えても見やすく） */}
+      <div style={{marginBottom:10}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:3}}>
+          <span style={{fontSize:11,fontWeight:900,color:'#ef5350'}}>❤ HP</span>
+          <span style={{fontSize:13,fontWeight:900,color:'#fff'}}>{st.maxHp.toLocaleString()}</span>
+        </div>
+        <div style={{height:8,background:'rgba(0,0,0,0.4)',borderRadius:4,overflow:'hidden',border:'1px solid rgba(239,83,80,0.3)'}}>
+          <div style={{width:'100%',height:'100%',background:'linear-gradient(90deg,#ef5350,#ff7043)',boxShadow:'inset 0 0 6px rgba(255,255,255,0.3)'}}/>
+        </div>
+      </div>
+      {/* 下段: ATK/DEF/SPD/LUK 縦バー (動的スケール = 4ステの最大値基準) */}
+      {(()=>{const OTHER_STATS=[['ATK',st.atk,'#ff7043'],['DEF',st.def,'#42a5f5'],['SPD',st.spd,'#66bb6a'],['LUK',st.luk,'#ab47bc']];
+      const maxOther=Math.max(st.atk,st.def,st.spd,st.luk,50);
+      return <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8}}>
+        {OTHER_STATS.map(([label,val,col])=><div key={label} style={{textAlign:'center'}}>
+          <div style={{fontSize:10,fontWeight:900,color:col}}>{label}</div>
+          <div style={{width:'100%',height:42,display:'flex',alignItems:'flex-end',justifyContent:'center',marginTop:3}}>
+            <div style={{width:14,background:`linear-gradient(180deg,${col},${col}99)`,borderRadius:3,height:`${(val/maxOther)*100}%`,minHeight:4,transition:'height 0.5s',boxShadow:`0 0 4px ${col}66`}}/>
+          </div>
+          <div style={{fontSize:11,fontWeight:700,marginTop:3}}>{val.toLocaleString()}</div>
+        </div>)}
+      </div>;})()}
     </div>
 
     {/* 施設パネル（ホームに5種類の施設+訓練場） */}
@@ -2385,19 +2408,6 @@ function HomeScreen({s,d}){
       </div>
     </div>
 
-    {/* ステータス */}
-    <div style={{...CARD,marginBottom:8}}>
-      <div style={{fontSize:11,fontWeight:700,opacity:0.6,marginBottom:10}}>⚔ ステータス</div>
-      <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:8}}>
-        {STAT_DEFS.map(([label,val,col])=><div key={label} style={{textAlign:'center'}}>
-          <div style={{fontSize:11,fontWeight:900,color:col}}>{label}</div>
-          <div style={{width:'100%',height:50,display:'flex',alignItems:'flex-end',justifyContent:'center',marginTop:3}}>
-            <div style={{width:16,background:col,borderRadius:4,height:`${Math.min(100,(val/MAX_S)*100)}%`,minHeight:4,transition:'height 0.5s'}}/>
-          </div>
-          <div style={{fontSize:11,fontWeight:700,marginTop:3}}>{val}</div>
-        </div>)}
-      </div>
-    </div>
   </div>;
 }
 
