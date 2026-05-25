@@ -3230,15 +3230,16 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
   const [promoteStage,setPromoteStage]=useState(()=>results.map(()=>0));
 
   if(promoteSeqRef.current===null){
-    // 初期化: UR/LRカードの30%を昇格対象に選定（演出は引いた直後すでに表示される）
-    // 裏面色は3段階（低=銀青/中=紫/高=金）なので、パスも3段階で構成
+    // 初期化: SR以上のカードの60%を昇格対象に選定
+    // 裏面色は3段階（低=銀青/中=紫/高=金）なので、パスもレア度に応じて段階数を変える
     const seq=results.map(r=>{
       if(kind!=='monster')return null; // 素材ガチャは昇格演出なし
       const idx=RO.indexOf(r.rarity);
-      if(idx<3)return null; // C/R/SRは昇格演出なし（最初からその色で表示）
-      if(Math.random()>=0.30)return null; // 70%は通常表示
-      // 昇格演出: 低レア(C) → 中レア(SR) → 高レア(UR/LR) の3段階
-      // 表示色は backColorOf() で 3段階に正規化される
+      if(idx<2)return null; // C/Rは演出なし
+      if(Math.random()>=0.60)return null; // 40%は通常表示
+      // SR: 銀青→紫 (2段階)
+      // UR/LR: 銀青→紫→金 (3段階)
+      if(r.rarity==='SR')return ['C','SR'];
       return ['C','SR',r.rarity];
     });
     promoteSeqRef.current=seq;
