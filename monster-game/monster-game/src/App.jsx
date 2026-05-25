@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v1.7.0"; // 回転修正+リザルト詳細+装備プレビュー+一括合成
+const APP_VERSION = "v1.8.0"; // 裏面レア識別デザイン+スキップでLR/昇格止める
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -3336,6 +3336,14 @@ function backColorOf(rarity){
   if(rarity==='UR')return '#ffd700';                    // 高レア: 金
   return '#ff5b89';                                      // 伝説 (LR): 鮮やかピンク
 }
+// 裏面の中心アイコン・ラベルをレアごとに変える（一目で識別できるように）
+function backIconOf(rarity){
+  if(rarity==='C')return {icon:'·',label:'??',sub:''};
+  if(rarity==='R')return {icon:'✦',label:'?',sub:''};
+  if(rarity==='SR')return {icon:'✧',label:'SR?',sub:'⋆ ⋆ ⋆'};
+  if(rarity==='UR')return {icon:'★',label:'UR?',sub:'✧ ★ ✧'};
+  return {icon:'♛',label:'LR!!',sub:'✦ ♛ ✦'}; // LR
+}
 
 function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDisabled}){
   // kind: 'monster' | 'material'
@@ -3449,13 +3457,44 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
     setZoomIdx(null);
   }
 
-  // 全部一気にめくる（スキップ）
+  // スキップモード: 演出ありで早送り。LR or 昇格対象に到達したらズームで止まる
+  // 通常のC〜URは一気にめくり、LR と昇格対象（30%選定済み）だけは演出を見せる
+  const [skipping,setSkipping]=useState(false);
   function skipAll(){
     if(zoomIdx!==null)return; // 拡大中はスキップ不可
-    setFlipped(results.map(()=>true));
-    nextIdxRef.current=results.length;
-    setDone(true);
+    if(done)return;
+    setSkipping(true); // 自動進行モード ON
   }
+
+  // スキップモード中の自動進行ロジック
+  useEffect(()=>{
+    if(!skipping)return;
+    if(zoomIdx!==null)return; // ズーム中は待機
+    // 次の LR or 昇格対象 を探す
+    let stopIdx=-1;
+    for(let i=nextIdxRef.current;i<results.length;i++){
+      const rr=results[i];
+      if(kind==='monster'&&(rr.rarity==='LR'||promoteSeqRef.current?.[i])){
+        stopIdx=i;break;
+      }
+    }
+    if(stopIdx===-1){
+      // 残りに止めたいカードがない → 全てめくって終了
+      setFlipped(results.map(()=>true));
+      nextIdxRef.current=results.length;
+      setDone(true);
+      setSkipping(false);
+    }else{
+      // stopIdx の手前まで一気にめくる、stopIdx でズーム発動
+      setFlipped(prev=>{
+        const a=[...prev];
+        for(let j=nextIdxRef.current;j<stopIdx;j++)a[j]=true;
+        return a;
+      });
+      nextIdxRef.current=stopIdx;
+      setZoomIdx(stopIdx);
+    }
+  },[skipping,zoomIdx]);
 
   // レイアウト: 10連=2行5列、1連=1枚中央
   const cols=results.length>=5?5:results.length;
@@ -3541,10 +3580,20 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
               </div>
             ):(
               /* 裏面 A (色 = rarA) */
-              <div style={{position:'absolute',inset:0,borderRadius:14,background:`linear-gradient(135deg,${bcA}44 0%,#1a0533 50%,${bcA}33 100%)`,border:`3px solid ${bcA}`,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:`0 0 30px ${bcA}aa,inset 0 0 24px ${bcA}55`,overflow:'hidden'}}>
+              (()=>{const icA=backIconOf(rarA);const isURA=rarA==='UR';const isLRA=rarA==='LR';const isSRA=rarA==='SR';
+              return <div style={{position:'absolute',inset:0,borderRadius:14,background:isLRA?`linear-gradient(135deg,${bcA}55 0%,#3a0a1f 30%,#1a0533 55%,#3a0a1f 80%,${bcA}44 100%)`:`linear-gradient(135deg,${bcA}44 0%,#1a0533 50%,${bcA}33 100%)`,border:`3px solid ${bcA}`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',boxShadow:`0 0 30px ${bcA}aa,inset 0 0 24px ${bcA}55`,overflow:'hidden',position:'relative'}}>
+                {/* レア背景パターン */}
+                {isURA&&<div style={{position:'absolute',inset:0,background:`radial-gradient(circle at center, ${bcA}44 0%, transparent 70%)`,pointerEvents:'none'}}/>}
+                {isLRA&&<div style={{position:'absolute',inset:0,background:'conic-gradient(from 0deg, #ff5b8966, #ffd70066, #66bb6a66, #42a5f566, #bf88ff66, #ff5b8966)',animation:'rotate 6s linear infinite',opacity:0.5,pointerEvents:'none'}}/>}
+                {/* 角のレアラベル */}
+                <div style={{position:'absolute',top:8,left:10,fontSize:14,fontWeight:900,color:bcA,letterSpacing:1,textShadow:`0 0 8px ${bcA}`,zIndex:2}}>{icA.label}</div>
+                <div style={{position:'absolute',bottom:8,right:10,fontSize:14,fontWeight:900,color:bcA,letterSpacing:1,textShadow:`0 0 8px ${bcA}`,zIndex:2,transform:'rotate(180deg)'}}>{icA.label}</div>
+                {/* キラ星 */}
                 {[0,1,2,3,4,5,6,7].map(k=><div key={k} style={{position:'absolute',top:`${10+Math.sin(k*1.9)*42}%`,left:`${8+Math.cos(k*2.3)*42}%`,fontSize:10+(k%3)*3,color:bcA,opacity:0.6,animation:`twinkle ${1.2+k*0.18}s ease-in-out infinite`,textShadow:`0 0 6px ${bcA}`}}>✦</div>)}
-                <div style={{fontSize:80,color:bcA,opacity:0.9,animation:'pulse 1.0s ease-in-out infinite',textShadow:`0 0 24px ${bcA},0 0 48px ${bcA}88`,zIndex:1}}>✦</div>
-              </div>
+                {/* 中心アイコン */}
+                <div style={{fontSize:isLRA?95:isURA?88:80,color:bcA,opacity:0.95,animation:'pulse 1.0s ease-in-out infinite',textShadow:`0 0 28px ${bcA},0 0 56px ${bcA}aa`,zIndex:1}}>{icA.icon}</div>
+                {(isSRA||isURA||isLRA)&&<div style={{fontSize:14,color:bcA,opacity:0.8,marginTop:4,letterSpacing:6,textShadow:`0 0 8px ${bcA}`,zIndex:1}}>{icA.sub}</div>}
+              </div>;})()
             )}
           </div>
           {/* 裏側面 (faceB) - 奇数段階で表示、最終段階のrotation%360===180なら表面 */}
@@ -3562,10 +3611,16 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
               </div>
             ):(
               /* 裏面 B (色 = rarB) */
-              <div style={{position:'absolute',inset:0,borderRadius:14,background:`linear-gradient(135deg,${bcB}44 0%,#1a0533 50%,${bcB}33 100%)`,border:`3px solid ${bcB}`,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:`0 0 30px ${bcB}aa,inset 0 0 24px ${bcB}55`,overflow:'hidden'}}>
+              (()=>{const icB=backIconOf(rarB);const isURB=rarB==='UR';const isLRB=rarB==='LR';const isSRB=rarB==='SR';
+              return <div style={{position:'absolute',inset:0,borderRadius:14,background:isLRB?`linear-gradient(135deg,${bcB}55 0%,#3a0a1f 30%,#1a0533 55%,#3a0a1f 80%,${bcB}44 100%)`:`linear-gradient(135deg,${bcB}44 0%,#1a0533 50%,${bcB}33 100%)`,border:`3px solid ${bcB}`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',boxShadow:`0 0 30px ${bcB}aa,inset 0 0 24px ${bcB}55`,overflow:'hidden',position:'relative'}}>
+                {isURB&&<div style={{position:'absolute',inset:0,background:`radial-gradient(circle at center, ${bcB}44 0%, transparent 70%)`,pointerEvents:'none'}}/>}
+                {isLRB&&<div style={{position:'absolute',inset:0,background:'conic-gradient(from 0deg, #ff5b8966, #ffd70066, #66bb6a66, #42a5f566, #bf88ff66, #ff5b8966)',animation:'rotate 6s linear infinite',opacity:0.5,pointerEvents:'none'}}/>}
+                <div style={{position:'absolute',top:8,left:10,fontSize:14,fontWeight:900,color:bcB,letterSpacing:1,textShadow:`0 0 8px ${bcB}`,zIndex:2}}>{icB.label}</div>
+                <div style={{position:'absolute',bottom:8,right:10,fontSize:14,fontWeight:900,color:bcB,letterSpacing:1,textShadow:`0 0 8px ${bcB}`,zIndex:2,transform:'rotate(180deg)'}}>{icB.label}</div>
                 {[0,1,2,3,4,5,6,7].map(k=><div key={k} style={{position:'absolute',top:`${10+Math.sin(k*1.9)*42}%`,left:`${8+Math.cos(k*2.3)*42}%`,fontSize:10+(k%3)*3,color:bcB,opacity:0.6,animation:`twinkle ${1.2+k*0.18}s ease-in-out infinite`,textShadow:`0 0 6px ${bcB}`}}>✦</div>)}
-                <div style={{fontSize:80,color:bcB,opacity:0.9,animation:'pulse 1.0s ease-in-out infinite',textShadow:`0 0 24px ${bcB},0 0 48px ${bcB}88`,zIndex:1}}>✦</div>
-              </div>
+                <div style={{fontSize:isLRB?95:isURB?88:80,color:bcB,opacity:0.95,animation:'pulse 1.0s ease-in-out infinite',textShadow:`0 0 28px ${bcB},0 0 56px ${bcB}aa`,zIndex:1}}>{icB.icon}</div>
+                {(isSRB||isURB||isLRB)&&<div style={{fontSize:14,color:bcB,opacity:0.8,marginTop:4,letterSpacing:6,textShadow:`0 0 8px ${bcB}`,zIndex:1}}>{icB.sub}</div>}
+              </div>;})()
             )}
           </div>
         </div>
@@ -3671,10 +3726,23 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
         const isZoomTarget=zoomIdx===i;
         return <div key={i} style={{aspectRatio:'2/3',perspective:'600px',position:'relative',opacity:isZoomTarget?0.15:1,transition:'opacity 0.4s'}}>
           <div style={{position:'absolute',inset:0,transformStyle:'preserve-3d',transition:'transform 0.55s cubic-bezier(0.34,1.56,0.64,1)',transform:flippedI?'rotateY(180deg)':'rotateY(0deg)'}}>
-            {/* 裏面（レア色反映） */}
-            <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',borderRadius:8,background:`linear-gradient(135deg,${backCol}33 0%,#1a0533 55%,${backCol}22 100%)`,border:`1.5px solid ${backCol}aa`,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:`0 2px 8px rgba(0,0,0,0.3),inset 0 0 14px ${backCol}33${isPromoting?',0 0 18px '+backCol+'cc':''}`,transition:'all 0.35s ease',animation:isPromoting?'pulse 0.7s ease-in-out infinite':'none'}}>
-              <div style={{fontSize:22,color:backCol,opacity:0.75,textShadow:`0 0 8px ${backCol}`}}>✦</div>
-            </div>
+            {/* 裏面（レア色反映＋識別アイコン） */}
+            {(()=>{const ic=backIconOf(backRar);
+            // レア専用の追加装飾
+            const isUR=backRar==='UR';
+            const isLR=backRar==='LR';
+            const isSR=backRar==='SR';
+            return <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',borderRadius:8,background:isLR?`linear-gradient(135deg,${backCol}44 0%,#3a0a1f 30%,#1a0533 55%,#3a0a1f 80%,${backCol}33 100%)`:`linear-gradient(135deg,${backCol}33 0%,#1a0533 55%,${backCol}22 100%)`,border:`${isLR?2:isUR?1.8:1.5}px solid ${backCol}${isLR?'':'aa'}`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',boxShadow:`0 2px 8px rgba(0,0,0,0.3),inset 0 0 14px ${backCol}${isLR?'66':'33'}${isUR||isLR?',0 0 12px '+backCol+'88':''}`,overflow:'hidden',position:'relative'}}>
+              {/* レア背景パターン */}
+              {isUR&&<div style={{position:'absolute',inset:0,background:`radial-gradient(circle at center, ${backCol}33 0%, transparent 70%)`,pointerEvents:'none'}}/>}
+              {isLR&&<div style={{position:'absolute',inset:0,background:'conic-gradient(from 0deg, #ff5b8944, #ffd70044, #66bb6a44, #42a5f544, #bf88ff44, #ff5b8944)',animation:'rotate 8s linear infinite',opacity:0.45,pointerEvents:'none'}}/>}
+              {/* レアラベル（左上） */}
+              <div style={{position:'absolute',top:2,left:3,fontSize:7,fontWeight:900,color:backCol,opacity:0.85,letterSpacing:0.5,textShadow:`0 0 4px ${backCol}`,zIndex:2}}>{ic.label}</div>
+              {/* 中心アイコン */}
+              <div style={{fontSize:isLR?26:isUR?24:22,color:backCol,opacity:0.95,textShadow:`0 0 ${isLR?12:isUR?10:8}px ${backCol},0 0 ${isLR?22:isUR?18:14}px ${backCol}88`,zIndex:1,animation:isLR?'pulse 1s ease-in-out infinite':isUR?'pulse 1.4s ease-in-out infinite':'none'}}>{ic.icon}</div>
+              {/* SR/UR/LR: サブアイコン */}
+              {(isSR||isUR||isLR)&&<div style={{fontSize:6,color:backCol,opacity:0.7,marginTop:1,letterSpacing:1,zIndex:1}}>{ic.sub}</div>}
+            </div>;})()}
             {/* 表面 */}
             <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',borderRadius:8,transform:'rotateY(180deg)',background:kind==='monster'?`linear-gradient(135deg,${MONS[r.type]?.bg||col}44,${col}22)`:`linear-gradient(135deg,${col}33,${col}11)`,border:`2px solid ${col}`,boxShadow:`0 0 10px ${col}77,inset 0 0 8px ${col}33`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:4,overflow:'hidden'}}>
               {kind==='monster'?<>
@@ -3690,7 +3758,7 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
         </div>;
       })}
     </div>
-    <button onClick={skipAll} disabled={zoomIdx!==null} style={{...FF,width:'100%',padding:'10px 0',borderRadius:11,border:'1px solid rgba(255,255,255,0.15)',background:'rgba(255,255,255,0.05)',color:'rgba(255,255,255,0.7)',cursor:zoomIdx!==null?'default':'pointer',fontSize:11,fontWeight:700}}>⏭ 全てめくる</button>
+    <button onClick={skipAll} disabled={zoomIdx!==null||skipping} style={{...FF,width:'100%',padding:'10px 0',borderRadius:11,border:'1px solid rgba(255,255,255,0.15)',background:skipping?'rgba(191,136,255,0.15)':'rgba(255,255,255,0.05)',color:skipping?'#bf88ff':'rgba(255,255,255,0.7)',cursor:zoomIdx!==null||skipping?'default':'pointer',fontSize:11,fontWeight:700}}>{skipping?'⏩ スキップ中…（LR/昇格は停止）':'⏭ 演出スキップ（LR/昇格は見る）'}</button>
     {renderZoomOverlay()}
   </div>;
 }
