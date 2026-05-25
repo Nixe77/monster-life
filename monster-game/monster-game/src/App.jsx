@@ -43,6 +43,11 @@ import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, si
 import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 
 // ═══════════════════════════════════════════════════════════════
+// バージョン管理（アップデート確認用）
+// ═══════════════════════════════════════════════════════════════
+const APP_VERSION = "v1.5.0"; // 更新時に変更（フェーズ1 + Firebase + ガチャ演出多段階フリップ）
+
+// ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
 // FIREBASE_SETUP.md の手順5でコピーした値に置き換えてください
 // ═══════════════════════════════════════════════════════════════
@@ -93,6 +98,11 @@ const CSS = `
   @keyframes rotate { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
   @keyframes twinkle{ 0%,100%{opacity:0.3;transform:scale(0.8)} 50%{opacity:1;transform:scale(1.4)} }
   @keyframes zoomInCard{ 0%{transform:scale(0.18) translateY(20px);opacity:0} 60%{transform:scale(1.08);opacity:1} 100%{transform:scale(1);opacity:1} }
+  @keyframes flashBoom{ 0%{opacity:0;transform:scale(0.3)} 30%{opacity:1;transform:scale(2.2)} 100%{opacity:0;transform:scale(3.5)} }
+  @keyframes flashWhite{ 0%{opacity:0} 30%{opacity:0.85} 100%{opacity:0} }
+  @keyframes burstText{ 0%{opacity:0;transform:translate(-50%,-50%) scale(0.3) rotate(-12deg)} 30%{opacity:1;transform:translate(-50%,-50%) scale(1.25) rotate(2deg)} 70%{transform:translate(-50%,-50%) scale(1) rotate(0deg)} 100%{opacity:0;transform:translate(-50%,-50%) scale(1.5) rotate(0deg)} }
+  @keyframes cardShake{ 0%,100%{transform:rotate(0)} 25%{transform:rotate(-2deg)} 50%{transform:rotate(2deg)} 75%{transform:rotate(-1deg)} }
+  @keyframes orbitRing{ 0%{opacity:0;transform:translate(-50%,-50%) scale(0.5)} 50%{opacity:0.7} 100%{opacity:0;transform:translate(-50%,-50%) scale(2.5)} }
 `;
 
 // ─── MONSTER SPRITES ──────────────────────────────────────
@@ -3284,6 +3294,8 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
   },[zoomIdx]);
 
   // ズーム中の段階進行
+  // flashKey: 段階上昇時のフラッシュエフェクト発火用キー（変化するたびにアニメ再生）
+  const [flashKey,setFlashKey]=useState(0);
   useEffect(()=>{
     if(zoomIdx===null)return;
     if(zoomFlipped)return; // すでに完了
@@ -3292,18 +3304,20 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
     // 全体段階数: 昇格パスがあればpath.length（最終裏面まで）+1（表面）、なければ1（即表面）
     const stageCount=promoteSeq?promoteSeq.length:1; // 中間段階の数
     // 各段階の表示時間
-    const stageDelay=zoomStage===0?700:800; // 初回は短め（ズームイン直後）
+    const stageDelay=zoomStage===0?700:850; // 初回は短め（ズームイン直後）
 
     const tid=setTimeout(()=>{
       if(zoomStage<stageCount-1){
         // 中間段階: 360°回転して次の裏面色へ
         setZoomRotation(r2=>r2+360);
         setZoomStage(s=>s+1);
+        setFlashKey(k=>k+1); // フラッシュ発火
       }else{
         // 最終段階: 180°回転して表面へ
         setZoomRotation(r2=>r2+180);
         setFlipped(prev=>{const a=[...prev];a[zoomIdx]=true;return a;});
         setZoomFlipped(true);
+        setFlashKey(k=>k+1); // 最終段階でも豪華にフラッシュ
       }
     },stageDelay);
     return()=>clearTimeout(tid);
@@ -3345,22 +3359,41 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
     // 昇格中バナー（中間段階の表示）
     const isMidStage=promoteSeq&&zoomStage<promoteSeq.length-1;
     const promoBanner=isMidStage?(currentBackRar==='C'?'? 何が出る ?':currentBackRar==='SR'?'⭐ 昇格中... ⭐':'⭐⭐ さらに昇格! ⭐⭐'):null;
-    return <div onClick={closeZoom} style={{position:'fixed',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:14,cursor:zoomFlipped?'pointer':'default',background:`radial-gradient(circle at center, ${bc}55 0%, rgba(10,2,25,0.97) 60%)`,backdropFilter:'blur(8px)',animation:'fadeIn 0.35s ease-out',zIndex:50,padding:14,transition:'background 0.7s'}}>
+    // 段階上昇時の派手テキスト（zoomStage > 0 で表示）
+    const levelUpText=zoomStage>0&&!zoomFlipped?(currentBackRar==='SR'?'⚡ LEVEL UP! ⚡':'⚡⚡ MAX UP!! ⚡⚡'):null;
+    return <div onClick={closeZoom} style={{position:'fixed',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:14,cursor:zoomFlipped?'pointer':'default',background:`radial-gradient(circle at center, ${bc}55 0%, rgba(10,2,25,0.97) 60%)`,backdropFilter:'blur(8px)',animation:'fadeIn 0.35s ease-out',zIndex:50,padding:14,transition:'background 0.7s',overflow:'hidden'}}>
       {/* 放射状の光（フリップ後のみ表示） */}
       {zoomFlipped&&<div style={{position:'absolute',inset:0,pointerEvents:'none',background:`conic-gradient(from 0deg, transparent 0deg, ${col}44 10deg, transparent 20deg, transparent 40deg, ${col}33 50deg, transparent 60deg, transparent 90deg, ${col}55 100deg, transparent 110deg, transparent 140deg, ${col}33 150deg, transparent 160deg, transparent 180deg, ${col}44 190deg, transparent 200deg, transparent 230deg, ${col}33 240deg, transparent 250deg, transparent 280deg, ${col}55 290deg, transparent 300deg, transparent 330deg, ${col}44 340deg, transparent 350deg)`,animation:'rotate 8s linear infinite',opacity:0.55}}/>}
+
+      {/* フラッシュ＆光の波: 段階上昇時に発火（flashKey変化で再アニメ） */}
+      {flashKey>0&&<>
+        {/* 白フラッシュ */}
+        <div key={`fw${flashKey}`} style={{position:'absolute',inset:0,pointerEvents:'none',background:`radial-gradient(circle at center, ${bc}ff 0%, ${bc}aa 25%, transparent 60%)`,mixBlendMode:'screen',animation:'flashWhite 0.5s ease-out forwards',zIndex:3}}/>
+        {/* 中心から広がる光の球 */}
+        <div key={`fb${flashKey}`} style={{position:'absolute',top:'50%',left:'50%',width:200,height:200,marginLeft:-100,marginTop:-100,pointerEvents:'none',borderRadius:'50%',background:`radial-gradient(circle, ${bc}cc 0%, ${bc}55 40%, transparent 70%)`,animation:'flashBoom 0.7s cubic-bezier(0.2,0.8,0.3,1) forwards',zIndex:3}}/>
+        {/* 光のリング（複数発射） */}
+        {[0,1,2].map(k=><div key={`fr${flashKey}-${k}`} style={{position:'absolute',top:'50%',left:'50%',width:180,height:180,pointerEvents:'none',borderRadius:'50%',border:`3px solid ${bc}`,boxShadow:`0 0 24px ${bc}`,animation:`orbitRing 0.9s ease-out forwards`,animationDelay:`${k*0.12}s`,zIndex:3}}/>)}
+      </>}
+
       {/* バナー: 中間段階は昇格バナー、最終段階は本来のバナー */}
-      {promoBanner&&<div style={{fontSize:12,fontWeight:900,letterSpacing:2,color:bc,background:'rgba(0,0,0,0.55)',padding:'5px 16px',borderRadius:18,border:`2px solid ${bc}`,boxShadow:`0 0 18px ${bc}aa`,animation:'pulse 1s ease-in-out infinite',zIndex:2}}>{promoBanner}</div>}
-      {zoomFlipped&&<div style={{fontSize:13,fontWeight:900,letterSpacing:3,color:col,background:'rgba(0,0,0,0.5)',padding:'6px 18px',borderRadius:20,border:`2px solid ${col}`,boxShadow:`0 0 24px ${col}aa`,animation:'glow 1.5s ease-in-out infinite',zIndex:2}}>{bannerText}</div>}
+      {promoBanner&&<div style={{fontSize:13,fontWeight:900,letterSpacing:2,color:bc,background:'rgba(0,0,0,0.65)',padding:'6px 18px',borderRadius:20,border:`2.5px solid ${bc}`,boxShadow:`0 0 24px ${bc}cc,inset 0 0 12px ${bc}44`,animation:'pulse 0.8s ease-in-out infinite',zIndex:2}}>{promoBanner}</div>}
+      {zoomFlipped&&<div style={{fontSize:14,fontWeight:900,letterSpacing:3,color:col,background:'rgba(0,0,0,0.55)',padding:'7px 20px',borderRadius:22,border:`2.5px solid ${col}`,boxShadow:`0 0 30px ${col}cc,inset 0 0 14px ${col}55`,animation:'glow 1.5s ease-in-out infinite',zIndex:2}}>{bannerText}</div>}
+
+      {/* LEVEL UP! テキスト（中間段階で出現） */}
+      {levelUpText&&<div key={`lu${flashKey}`} style={{position:'absolute',top:'30%',left:'50%',fontSize:24,fontWeight:900,letterSpacing:2,color:bc,textShadow:`0 0 12px ${bc},0 0 24px ${bc},0 0 36px ${bc}aa,2px 2px 0 rgba(0,0,0,0.6)`,animation:'burstText 1s cubic-bezier(0.34,1.56,0.64,1) forwards',zIndex:4,pointerEvents:'none',whiteSpace:'nowrap'}}>{levelUpText}</div>}
 
       {/* 拡大カード（多段階フリップ） */}
       <div style={{width:260,maxWidth:'82vw',aspectRatio:'2/3',perspective:'1000px',position:'relative',animation:'zoomInCard 0.55s cubic-bezier(0.34,1.56,0.64,1)',zIndex:2}}>
-        <div style={{position:'absolute',inset:0,transformStyle:'preserve-3d',transition:'transform 0.7s cubic-bezier(0.34,1.56,0.64,1)',transform:`rotateY(${zoomRotation}deg)`}}>
+        <div key={`card${flashKey}`} style={{position:'absolute',inset:0,transformStyle:'preserve-3d',transition:'transform 0.7s cubic-bezier(0.34,1.56,0.64,1)',transform:`rotateY(${zoomRotation}deg)`,animation:flashKey>0&&!zoomFlipped?'cardShake 0.4s ease-in-out':'none'}}>
           {/* 裏面（拡大版・段階に応じた色） */}
-          <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',borderRadius:14,background:`linear-gradient(135deg,${bc}44 0%,#1a0533 50%,${bc}33 100%)`,border:`3px solid ${bc}`,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:`0 0 30px ${bc}aa,inset 0 0 24px ${bc}55`,transition:'all 0.5s ease'}}>
-            <div style={{fontSize:80,color:bc,opacity:0.85,animation:'pulse 1.4s ease-in-out infinite',textShadow:`0 0 18px ${bc}`,transition:'color 0.5s ease,text-shadow 0.5s ease'}}>✦</div>
+          <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',transform:'translateZ(1px)',borderRadius:14,background:`linear-gradient(135deg,${bc}44 0%,#1a0533 50%,${bc}33 100%)`,border:`3px solid ${bc}`,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:`0 0 30px ${bc}aa,inset 0 0 24px ${bc}55`,transition:'all 0.5s ease',overflow:'hidden'}}>
+            {/* キラ星パーティクル（裏面でも常時光る） */}
+            {[0,1,2,3,4,5,6,7].map(k=><div key={k} style={{position:'absolute',top:`${10+Math.sin(k*1.9)*42}%`,left:`${8+Math.cos(k*2.3)*42}%`,fontSize:10+(k%3)*3,color:bc,opacity:0.6,animation:`twinkle ${1.2+k*0.18}s ease-in-out infinite`,textShadow:`0 0 6px ${bc}`}}>✦</div>)}
+            {/* 中心の大きな星 */}
+            <div style={{fontSize:80,color:bc,opacity:0.9,animation:'pulse 1.0s ease-in-out infinite',textShadow:`0 0 24px ${bc},0 0 48px ${bc}88`,transition:'color 0.5s ease,text-shadow 0.5s ease',zIndex:1}}>✦</div>
           </div>
-          {/* 表面（拡大版） */}
-          <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',transform:'rotateY(180deg)',borderRadius:14,padding:'28px 20px',background:`linear-gradient(135deg,${mi.bg}66,rgba(255,255,255,0.04))`,border:`3px solid ${col}`,boxShadow:`0 0 36px ${col}cc, inset 0 0 18px ${col}33`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:8,position:'relative',overflow:'hidden'}}>
+          {/* 表面（拡大版・最終段階のみ表示 = 透け防止） */}
+          <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',transform:'rotateY(180deg) translateZ(1px)',borderRadius:14,padding:'28px 20px',background:`linear-gradient(135deg,${mi.bg}66,rgba(255,255,255,0.04))`,border:`3px solid ${col}`,boxShadow:`0 0 36px ${col}cc, inset 0 0 18px ${col}33`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:8,overflow:'hidden',opacity:zoomFlipped?1:0,transition:'opacity 0.3s ease 0.35s'}}>
             {[0,1,2,3,4,5].map(i=><div key={i} style={{position:'absolute',top:`${15+Math.sin(i*1.7)*40}%`,left:`${10+Math.cos(i*2.1)*38}%`,fontSize:14,color:col,opacity:0.7,animation:`twinkle ${1.4+i*0.2}s ease-in-out infinite`}}>✦</div>)}
             <MonsterSprite type={r.type} size={110} anim="float"/>
             <div style={{fontSize:20,fontWeight:900,color:mi.color}}>{mi.name}</div>
@@ -4886,7 +4919,10 @@ function GameApp({user,userName,cloudInitial,onLogout,offline}){
     <div style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 16px 8px',background:'linear-gradient(180deg,rgba(20,5,45,0.88) 0%,transparent 100%)'}}>
       <div style={{display:'flex',gap:4,}}><button onClick={()=>setShowSave(true)} style={{background:'none',border:'none',cursor:'pointer',fontSize:13,opacity:0.7,...FF}}>💾</button></div>
       <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:2}}>
-        <div style={{fontWeight:900,fontSize:13,background:'linear-gradient(90deg,#ff9fcf,#bf88ff)',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent'}}>✨ モンスターライフ</div>
+        <div style={{display:'flex',alignItems:'center',gap:6}}>
+          <div style={{fontWeight:900,fontSize:13,background:'linear-gradient(90deg,#ff9fcf,#bf88ff)',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent'}}>✨ モンスターライフ</div>
+          <div style={{fontSize:7,opacity:0.4,fontWeight:700,letterSpacing:0.5}}>{APP_VERSION}</div>
+        </div>
         {user&&!offline&&<div style={{display:'flex',alignItems:'center',gap:4,fontSize:8,opacity:0.7}}>
           <span style={{color:'#bf88ff'}}>👤 {userName}</span>
           {cloudSyncStatus==='saving'&&<span style={{color:'#42a5f5'}}>☁ 同期中…</span>}
