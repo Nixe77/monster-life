@@ -63,7 +63,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v2.2.8"; // ガチャ画面の絵文字を最高レアキャラの流れる表示に置換(コイン=LR/ダイヤ=MR、高画質マーキー)
+const APP_VERSION = "v2.2.9"; // ガチャ画面: シュッピタ式キャラ切替表示+canvas解像度512&devicePixelRatio対応で高画質化
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -116,6 +116,16 @@ const CSS = `
   @keyframes pulse  { 0%,100%{transform:scale(1)} 50%{transform:scale(1.06)} }
   @keyframes rotate { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
   @keyframes marqueeScroll { from{transform:translate3d(0,0,0)} to{transform:translate3d(-50%,0,0)} }
+  @keyframes spotlightIn {
+    0%   { transform:translateX(75%) scale(0.78); opacity:0; filter:blur(2px); }
+    55%  { transform:translateX(-4%) scale(1.08); opacity:1; filter:blur(0); }
+    75%  { transform:translateX(1%) scale(0.98); opacity:1; }
+    100% { transform:translateX(0)   scale(1);    opacity:1; }
+  }
+  @keyframes spotlightOut {
+    0%   { transform:translateX(0)    scale(1);    opacity:1; filter:blur(0); }
+    100% { transform:translateX(-75%) scale(0.82); opacity:0; filter:blur(2px); }
+  }
   @keyframes twinkle{ 0%,100%{opacity:0.3;transform:scale(0.8)} 50%{opacity:1;transform:scale(1.4)} }
   @keyframes zoomInCard{ 0%{transform:scale(0.18) translateY(20px);opacity:0} 60%{transform:scale(1.08);opacity:1} 100%{transform:scale(1);opacity:1} }
   @keyframes flashBoom{ 0%{opacity:0;transform:scale(0.3)} 30%{opacity:1;transform:scale(2.2)} 100%{opacity:0;transform:scale(3.5)} }
@@ -127,7 +137,7 @@ const CSS = `
 
 // ─── MONSTER SPRITES ──────────────────────────────────────
 
-function MonsterSpriteImpl({type,size=64,anim='float',style={},mode='pixel'}){
+function MonsterSpriteImpl({type,size=64,anim='float',style={},mode='pixel',quality=1}){
   const ref=useRef(null);
   // MONS定義に sprite フィールドがあれば、それを描画用キーとして使う（既存LRなど）
   // MR は sprite なしなので type自体（mr_X）が使われる
@@ -135,23 +145,36 @@ function MonsterSpriteImpl({type,size=64,anim='float',style={},mode='pixel'}){
   // mode='art' の場合は _art サフィックス付きキーを優先（MRキャラのみ存在）
   // _art版が存在しない場合は通常のキーにフォールバック
   const spriteKey=(mode==='art'&&SPRITE_IMGS[baseKey+'_art'])?baseKey+'_art':baseKey;
+  // canvas解像度: 256(quality=1) または 512(quality=2)
+  // さらに devicePixelRatio で Retina 対応（最大2倍まで）
+  const baseRes=256*quality;
   useEffect(()=>{
     const cv=ref.current;if(!cv)return;
+    const dpr=typeof window!=='undefined'?Math.min(window.devicePixelRatio||1,2):1;
+    const physical=Math.floor(baseRes*dpr);
+    if(cv.width!==physical){cv.width=physical;cv.height=physical;}
     const ctx=cv.getContext('2d');
+    // 高品質スムージング（mode='art'の場合のみ。pixel modeはピクセルアートなので無効化）
+    if(mode==='art'){
+      ctx.imageSmoothingEnabled=true;
+      ctx.imageSmoothingQuality='high';
+    }else{
+      ctx.imageSmoothingEnabled=false;
+    }
     const im=SPRITE_IMGS[spriteKey];
-    const draw=()=>{ctx.clearRect(0,0,256,256);if(im&&im.complete&&im.naturalWidth>0)ctx.drawImage(im,0,0,256,256);};
+    const draw=()=>{ctx.clearRect(0,0,physical,physical);if(im&&im.complete&&im.naturalWidth>0)ctx.drawImage(im,0,0,physical,physical);};
     draw();
     if(im&&!im.complete){
       const onLoad=()=>draw();
       im.addEventListener('load',onLoad,{once:true});
       return ()=>im.removeEventListener('load',onLoad);
     }
-  },[spriteKey]);
-  // canvas解像度は256にして、art版（192x192元データ）も pixel版（64x64元データ）も綺麗に拡縮
-  return <canvas ref={ref} width={256} height={256} style={{width:size,height:size,imageRendering:mode==='pixel'?'pixelated':'auto',...style,animation:anim!=='none'?`${anim} 1.4s ease-in-out infinite`:'none'}}/>;
+  },[spriteKey,mode,baseRes]);
+  // CSS: imageRenderingはpixel modeなら'pixelated'、art modeなら'auto'（高品質スケーリング）
+  return <canvas ref={ref} style={{width:size,height:size,imageRendering:mode==='pixel'?'pixelated':'auto',...style,animation:anim!=='none'?`${anim} 1.4s ease-in-out infinite`:'none'}}/>;
 }
-// memo化: type/size/mode が変わらない限り再レンダーしない
-const MonsterSprite=memo(MonsterSpriteImpl,(p,n)=>p.type===n.type&&p.size===n.size&&p.anim===n.anim&&p.mode===n.mode);
+// memo化: type/size/mode/quality が変わらない限り再レンダーしない
+const MonsterSprite=memo(MonsterSpriteImpl,(p,n)=>p.type===n.type&&p.size===n.size&&p.anim===n.anim&&p.mode===n.mode&&p.quality===n.quality);
 
 // ─── NPC PIXEL ART ───────────────────────────────────────
 function drawNPC(ctx,ox,oy,type,frame,flip){
@@ -5605,51 +5628,71 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
   </div>;
 }
 
-// ─── GACHA MARQUEE (流れる最高レアキャラ表示) ──────────────
-// rarity='LR'(コインガチャ) or 'MR'(ダイヤガチャ) で対応キャラを横スクロール表示
-function GachaMarquee({rarity,size=140}){
-  // 該当キャラリストを取得（MRは別プール、それ以外はPOOL_BY_RARITY）
+// ─── GACHA SPOTLIGHT (シュッピタ式キャラ切替表示) ──────────────
+// rarity='LR'(コインガチャ) or 'MR'(ダイヤガチャ) で対応キャラを1体ずつ中央表示
+// 入場(シュッ)→中央停止(ピタッ)→退場(シュッ)→次のキャラへ
+function GachaSpotlight({rarity,size=160}){
+  // 該当キャラリスト
   const list=useMemo(()=>{
     if(rarity==='MR')return POOL_MR.slice();
     return (POOL_BY_RARITY[rarity]||[]).slice();
   },[rarity]);
+  const [idx,setIdx]=useState(0);
+  const [phase,setPhase]=useState('in'); // 'in' | 'hold' | 'out'
+  // フェーズ遷移タイマー
+  useEffect(()=>{
+    if(list.length===0)return;
+    let t;
+    if(phase==='in'){
+      // 入場アニメ完了まで待機
+      t=setTimeout(()=>setPhase('hold'),520);
+    }else if(phase==='hold'){
+      // 中央で停止して鑑賞時間
+      t=setTimeout(()=>setPhase('out'),2800);
+    }else if(phase==='out'){
+      // 退場アニメ完了 → 次のキャラへ
+      t=setTimeout(()=>{
+        setIdx(i=>(i+1)%list.length);
+        setPhase('in');
+      },380);
+    }
+    return ()=>clearTimeout(t);
+  },[phase,list.length]);
   if(list.length===0)return null;
-  // 無限ループ用に2倍配置（-50%まで流して継ぎ目なくループ）
-  const doubled=[...list,...list];
-  // 1キャラあたり3秒、リストの長さに比例
-  const duration=Math.max(20,list.length*3.0);
-  // MRなら虹色オーラ背景、LRなら金色オーラ
-  const bgGrad=rarity==='MR'
-    ?'radial-gradient(ellipse at center,rgba(255,128,255,0.18) 0%,rgba(0,229,255,0.10) 40%,transparent 75%)'
-    :'radial-gradient(ellipse at center,rgba(255,215,0,0.18) 0%,rgba(255,107,157,0.10) 40%,transparent 75%)';
-  // フェードマスク（左右端をフェードアウト）
-  const fadeMask='linear-gradient(90deg,transparent 0%,#000 8%,#000 92%,transparent 100%)';
-  return <div style={{position:'relative',height:size+34,marginBottom:8,overflow:'hidden',borderRadius:14,background:bgGrad}}>
-    {/* キラキラ装飾（背景） */}
-    {[0,1,2,3,4,5].map(i=>{
-      const c=rarity==='MR'?['#ff80ff','#ffd700','#00e5ff'][i%3]:['#ffd700','#ff80b8','#ff9800'][i%3];
-      return <div key={i} style={{position:'absolute',top:`${10+Math.sin(i*1.7)*30}%`,left:`${(i*17)%90}%`,fontSize:11+(i%3)*3,color:c,opacity:0.45,animation:`twinkle ${1.6+i*0.22}s ease-in-out infinite`,pointerEvents:'none'}}>✦</div>;
+  const type=list[idx];
+  const mi=MONS[type];if(!mi)return null;
+  const isMR=rarity==='MR';
+  const bgGrad=isMR
+    ?'radial-gradient(ellipse at center,rgba(255,128,255,0.22) 0%,rgba(0,229,255,0.13) 40%,transparent 75%)'
+    :'radial-gradient(ellipse at center,rgba(255,215,0,0.22) 0%,rgba(255,107,157,0.13) 40%,transparent 75%)';
+  const animStyle=phase==='in'?'spotlightIn 0.52s cubic-bezier(0.34,1.5,0.64,1) forwards'
+    :phase==='out'?'spotlightOut 0.38s cubic-bezier(0.55,0.06,0.68,0.19) forwards'
+    :undefined;
+  return <div style={{position:'relative',height:size+50,marginBottom:8,overflow:'hidden',borderRadius:14,background:bgGrad,display:'flex',alignItems:'center',justifyContent:'center'}}>
+    {/* 背景キラキラ */}
+    {[0,1,2,3,4,5,6,7].map(i=>{
+      const c=isMR?['#ff80ff','#ffd700','#00e5ff'][i%3]:['#ffd700','#ff80b8','#ff9800'][i%3];
+      return <div key={i} style={{position:'absolute',top:`${10+Math.sin(i*1.9)*32}%`,left:`${(i*13+5)%92}%`,fontSize:12+(i%3)*3,color:c,opacity:0.45,animation:`twinkle ${1.5+i*0.21}s ease-in-out infinite`,pointerEvents:'none'}}>✦</div>;
     })}
-    {/* スクロールコンテナ（フェードマスク付き） */}
-    <div style={{position:'absolute',inset:0,WebkitMaskImage:fadeMask,maskImage:fadeMask,overflow:'hidden'}}>
-      <div style={{display:'flex',gap:18,padding:'4px 0',alignItems:'flex-end',width:'max-content',animation:`marqueeScroll ${duration}s linear infinite`,willChange:'transform'}}>
-        {doubled.map((type,i)=>{
-          const mi=MONS[type];if(!mi)return null;
-          const isMR=rarity==='MR';
-          return <div key={i} style={{display:'flex',flexDirection:'column',alignItems:'center',gap:2,minWidth:size,flexShrink:0}}>
-            <div style={{position:'relative',width:size,height:size,filter:isMR?'drop-shadow(0 0 12px rgba(255,128,255,0.45))':'drop-shadow(0 0 10px rgba(255,215,0,0.4))'}}>
-              <MonsterSprite type={type} size={size} anim='float' mode='art'/>
-            </div>
-            <div style={{fontSize:10,fontWeight:900,color:mi.color,whiteSpace:'nowrap',textShadow:'0 1px 3px rgba(0,0,0,0.7)'}}>{mi.name}</div>
-          </div>;
-        })}
+    {/* 中央スポットライト（phase切替でアニメ再生） */}
+    <div key={`${type}-${phase}`} style={{
+      display:'flex',flexDirection:'column',alignItems:'center',gap:4,
+      animation:animStyle,zIndex:1,willChange:'transform,opacity',
+    }}>
+      <div style={{position:'relative',width:size,height:size,filter:isMR?'drop-shadow(0 0 18px rgba(255,128,255,0.6))':'drop-shadow(0 0 14px rgba(255,215,0,0.55))'}}>
+        <MonsterSprite type={type} size={size} anim={phase==='hold'?'float':'none'} mode='art' quality={2}/>
       </div>
+      <div style={{fontSize:12,fontWeight:900,color:mi.color,whiteSpace:'nowrap',textShadow:'0 1px 4px rgba(0,0,0,0.8),0 0 8px rgba(0,0,0,0.6)',letterSpacing:1}}>{mi.name}</div>
     </div>
     {/* レアリティバッジ（右上） */}
-    <div style={{position:'absolute',top:6,right:8,padding:'3px 9px',borderRadius:8,fontSize:9,fontWeight:900,letterSpacing:1,zIndex:2,
-      background:rarity==='MR'?'linear-gradient(135deg,#ff80ff,#ffd700,#00e5ff)':'linear-gradient(135deg,#ff6b9d,#ffd700)',
-      color:'#fff',textShadow:'0 1px 2px rgba(0,0,0,0.6)',boxShadow:rarity==='MR'?'0 0 10px rgba(255,128,255,0.5)':'0 0 8px rgba(255,215,0,0.4)'}}>
-      {rarity==='MR'?'✺ MYTHIC ✺':'★ LEGENDARY ★'}
+    <div style={{position:'absolute',top:6,right:8,padding:'3px 10px',borderRadius:8,fontSize:9,fontWeight:900,letterSpacing:1,zIndex:2,
+      background:isMR?'linear-gradient(135deg,#ff80ff,#ffd700,#00e5ff)':'linear-gradient(135deg,#ff6b9d,#ffd700)',
+      color:'#fff',textShadow:'0 1px 2px rgba(0,0,0,0.6)',boxShadow:isMR?'0 0 10px rgba(255,128,255,0.55)':'0 0 8px rgba(255,215,0,0.45)'}}>
+      {isMR?'✺ MYTHIC ✺':'★ LEGENDARY ★'}
+    </div>
+    {/* 進行ドット（左下） */}
+    <div style={{position:'absolute',bottom:6,left:'50%',transform:'translateX(-50%)',display:'flex',gap:3,zIndex:2}}>
+      {list.map((_,i)=><div key={i} style={{width:5,height:5,borderRadius:3,background:i===idx?(isMR?'#ff80ff':'#ffd700'):'rgba(255,255,255,0.25)',boxShadow:i===idx?(isMR?'0 0 6px #ff80ff':'0 0 6px #ffd700'):'none',transition:'all 0.3s'}}/>)}
     </div>
   </div>;
 }
@@ -5746,7 +5789,7 @@ function GachaScreen({s,d}){
         </div>
         {spin
           ? <div style={{fontSize:72,animation:'pulse 0.3s ease-in-out infinite',marginBottom:8}}>🌀</div>
-          : <GachaMarquee rarity='LR' size={140}/>}
+          : <GachaSpotlight rarity='LR' size={140}/>}
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6,marginTop:14}}>
           <Btn onClick={()=>pull(1)} color='linear-gradient(135deg,#bf88ff,#7c3aed)' disabled={spin||s.coins<100}>1回<br/><span style={{fontSize:10}}>💰100</span></Btn>
           <Btn onClick={()=>pull(10)} color='linear-gradient(135deg,#ffd700,#ff9800)' text='#1a0533' disabled={spin||s.coins<900}>10連<br/><span style={{fontSize:10}}>💰900</span></Btn>
@@ -5807,7 +5850,7 @@ function GachaScreen({s,d}){
         </div>
         {spin
           ? <div style={{fontSize:72,animation:'pulse 0.3s ease-in-out infinite',marginBottom:8,filter:'drop-shadow(0 0 12px #ff80ff)'}}>🌀</div>
-          : <GachaMarquee rarity='MR' size={150}/>}
+          : <GachaSpotlight rarity='MR' size={150}/>}
         <div style={{fontSize:10,opacity:0.85,marginBottom:10,color:'#ffb0ff'}}>MR 5% / LR 95% （最高レアか伝説のみ排出）</div>
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
           <Btn onClick={()=>pullDiamond(1)} color='linear-gradient(135deg,#00e5ff,#7c4dff)' disabled={spin||(s.diamonds||0)<50}>1回 💎50</Btn>
