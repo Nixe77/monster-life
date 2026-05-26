@@ -63,7 +63,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v2.2.7"; // MRキャラ全9体のイラスト差し替え(見切れ修正済の高品質版)
+const APP_VERSION = "v2.2.8"; // ガチャ画面の絵文字を最高レアキャラの流れる表示に置換(コイン=LR/ダイヤ=MR、高画質マーキー)
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -115,6 +115,7 @@ const CSS = `
   @keyframes levelUp{ 0%{transform:scale(0);opacity:0} 60%{transform:scale(1.4)} 100%{transform:scale(1);opacity:1} }
   @keyframes pulse  { 0%,100%{transform:scale(1)} 50%{transform:scale(1.06)} }
   @keyframes rotate { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+  @keyframes marqueeScroll { from{transform:translate3d(0,0,0)} to{transform:translate3d(-50%,0,0)} }
   @keyframes twinkle{ 0%,100%{opacity:0.3;transform:scale(0.8)} 50%{opacity:1;transform:scale(1.4)} }
   @keyframes zoomInCard{ 0%{transform:scale(0.18) translateY(20px);opacity:0} 60%{transform:scale(1.08);opacity:1} 100%{transform:scale(1);opacity:1} }
   @keyframes flashBoom{ 0%{opacity:0;transform:scale(0.3)} 30%{opacity:1;transform:scale(2.2)} 100%{opacity:0;transform:scale(3.5)} }
@@ -5604,6 +5605,55 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
   </div>;
 }
 
+// ─── GACHA MARQUEE (流れる最高レアキャラ表示) ──────────────
+// rarity='LR'(コインガチャ) or 'MR'(ダイヤガチャ) で対応キャラを横スクロール表示
+function GachaMarquee({rarity,size=140}){
+  // 該当キャラリストを取得（MRは別プール、それ以外はPOOL_BY_RARITY）
+  const list=useMemo(()=>{
+    if(rarity==='MR')return POOL_MR.slice();
+    return (POOL_BY_RARITY[rarity]||[]).slice();
+  },[rarity]);
+  if(list.length===0)return null;
+  // 無限ループ用に2倍配置（-50%まで流して継ぎ目なくループ）
+  const doubled=[...list,...list];
+  // 1キャラあたり3秒、リストの長さに比例
+  const duration=Math.max(20,list.length*3.0);
+  // MRなら虹色オーラ背景、LRなら金色オーラ
+  const bgGrad=rarity==='MR'
+    ?'radial-gradient(ellipse at center,rgba(255,128,255,0.18) 0%,rgba(0,229,255,0.10) 40%,transparent 75%)'
+    :'radial-gradient(ellipse at center,rgba(255,215,0,0.18) 0%,rgba(255,107,157,0.10) 40%,transparent 75%)';
+  // フェードマスク（左右端をフェードアウト）
+  const fadeMask='linear-gradient(90deg,transparent 0%,#000 8%,#000 92%,transparent 100%)';
+  return <div style={{position:'relative',height:size+34,marginBottom:8,overflow:'hidden',borderRadius:14,background:bgGrad}}>
+    {/* キラキラ装飾（背景） */}
+    {[0,1,2,3,4,5].map(i=>{
+      const c=rarity==='MR'?['#ff80ff','#ffd700','#00e5ff'][i%3]:['#ffd700','#ff80b8','#ff9800'][i%3];
+      return <div key={i} style={{position:'absolute',top:`${10+Math.sin(i*1.7)*30}%`,left:`${(i*17)%90}%`,fontSize:11+(i%3)*3,color:c,opacity:0.45,animation:`twinkle ${1.6+i*0.22}s ease-in-out infinite`,pointerEvents:'none'}}>✦</div>;
+    })}
+    {/* スクロールコンテナ（フェードマスク付き） */}
+    <div style={{position:'absolute',inset:0,WebkitMaskImage:fadeMask,maskImage:fadeMask,overflow:'hidden'}}>
+      <div style={{display:'flex',gap:18,padding:'4px 0',alignItems:'flex-end',width:'max-content',animation:`marqueeScroll ${duration}s linear infinite`,willChange:'transform'}}>
+        {doubled.map((type,i)=>{
+          const mi=MONS[type];if(!mi)return null;
+          const isMR=rarity==='MR';
+          return <div key={i} style={{display:'flex',flexDirection:'column',alignItems:'center',gap:2,minWidth:size,flexShrink:0}}>
+            <div style={{position:'relative',width:size,height:size,filter:isMR?'drop-shadow(0 0 12px rgba(255,128,255,0.45))':'drop-shadow(0 0 10px rgba(255,215,0,0.4))'}}>
+              <MonsterSprite type={type} size={size} anim='float' mode='art'/>
+            </div>
+            <div style={{fontSize:10,fontWeight:900,color:mi.color,whiteSpace:'nowrap',textShadow:'0 1px 3px rgba(0,0,0,0.7)'}}>{mi.name}</div>
+          </div>;
+        })}
+      </div>
+    </div>
+    {/* レアリティバッジ（右上） */}
+    <div style={{position:'absolute',top:6,right:8,padding:'3px 9px',borderRadius:8,fontSize:9,fontWeight:900,letterSpacing:1,zIndex:2,
+      background:rarity==='MR'?'linear-gradient(135deg,#ff80ff,#ffd700,#00e5ff)':'linear-gradient(135deg,#ff6b9d,#ffd700)',
+      color:'#fff',textShadow:'0 1px 2px rgba(0,0,0,0.6)',boxShadow:rarity==='MR'?'0 0 10px rgba(255,128,255,0.5)':'0 0 8px rgba(255,215,0,0.4)'}}>
+      {rarity==='MR'?'✺ MYTHIC ✺':'★ LEGENDARY ★'}
+    </div>
+  </div>;
+}
+
 // ─── GACHA SCREEN ────────────────────────────────────────
 function GachaScreen({s,d}){
   const [spin,setSpin]=useState(false);
@@ -5694,7 +5744,9 @@ function GachaScreen({s,d}){
           <div style={{fontWeight:900,fontSize:18}}>🎰 モンスターガチャ</div>
           <div style={{fontWeight:900,color:'#ffd700',fontSize:14}}>💰 {s.coins}</div>
         </div>
-        <div style={{fontSize:72,animation:spin?'pulse 0.3s ease-in-out infinite':'float 2s ease-in-out infinite',marginBottom:8}}>{spin?'🌀':'🎱'}</div>
+        {spin
+          ? <div style={{fontSize:72,animation:'pulse 0.3s ease-in-out infinite',marginBottom:8}}>🌀</div>
+          : <GachaMarquee rarity='LR' size={140}/>}
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6,marginTop:14}}>
           <Btn onClick={()=>pull(1)} color='linear-gradient(135deg,#bf88ff,#7c3aed)' disabled={spin||s.coins<100}>1回<br/><span style={{fontSize:10}}>💰100</span></Btn>
           <Btn onClick={()=>pull(10)} color='linear-gradient(135deg,#ffd700,#ff9800)' text='#1a0533' disabled={spin||s.coins<900}>10連<br/><span style={{fontSize:10}}>💰900</span></Btn>
@@ -5753,7 +5805,9 @@ function GachaScreen({s,d}){
           <div style={{fontWeight:900,fontSize:18,background:'linear-gradient(90deg,#00e5ff,#7c4dff)',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent'}}>💎 プレミアムガチャ</div>
           <div style={{fontWeight:900,color:'#80deea',fontSize:14,textShadow:'0 0 6px #00e5ff'}}>💎 {s.diamonds||0}</div>
         </div>
-        <div style={{fontSize:72,animation:spin?'pulse 0.3s ease-in-out infinite':'float 2s ease-in-out infinite',marginBottom:8,filter:'drop-shadow(0 0 12px #ff80ff)'}}>{spin?'🌀':'💠'}</div>
+        {spin
+          ? <div style={{fontSize:72,animation:'pulse 0.3s ease-in-out infinite',marginBottom:8,filter:'drop-shadow(0 0 12px #ff80ff)'}}>🌀</div>
+          : <GachaMarquee rarity='MR' size={150}/>}
         <div style={{fontSize:10,opacity:0.85,marginBottom:10,color:'#ffb0ff'}}>MR 5% / LR 95% （最高レアか伝説のみ排出）</div>
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
           <Btn onClick={()=>pullDiamond(1)} color='linear-gradient(135deg,#00e5ff,#7c4dff)' disabled={spin||(s.diamonds||0)<50}>1回 💎50</Btn>
