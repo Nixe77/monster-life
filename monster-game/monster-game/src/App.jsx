@@ -37,7 +37,7 @@ const SPRITE_B64={
 };
 const SPRITE_IMGS={};
 if(typeof window!=='undefined'){Object.entries(SPRITE_B64).forEach(([k,src])=>{const im=new Image();im.src=src;SPRITE_IMGS[k]=im;});}
-import { useState, useEffect, useRef, useReducer } from "react";
+import { useState, useEffect, useRef, useReducer, memo, useMemo } from "react";
 import { initializeApp } from "firebase/app";
 import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "firebase/auth";
 import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v2.1.3"; // ガチャ結果のレア集計+限界突破集計カード削除
+const APP_VERSION = "v2.1.4"; // モンスタータブ重さ改善(MonsterSprite/EquippedMonsterをmemo化+sortedMonstersをuseMemo化)
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -108,7 +108,7 @@ const CSS = `
 
 // ─── MONSTER SPRITES ──────────────────────────────────────
 
-function MonsterSprite({type,size=64,anim='float',style={}}){
+function MonsterSpriteImpl({type,size=64,anim='float',style={}}){
   const ref=useRef(null);
   useEffect(()=>{
     const cv=ref.current;if(!cv)return;
@@ -124,6 +124,8 @@ function MonsterSprite({type,size=64,anim='float',style={}}){
   },[type]);
   return <canvas ref={ref} width={128} height={128} style={{width:size,height:size,...style,animation:anim!=='none'?`${anim} 1.4s ease-in-out infinite`:'none'}}/>;
 }
+// memo化: type/sizeが変わらない限り再レンダーしない
+const MonsterSprite=memo(MonsterSpriteImpl,(p,n)=>p.type===n.type&&p.size===n.size&&p.anim===n.anim);
 
 // ─── NPC PIXEL ART ───────────────────────────────────────
 function drawNPC(ctx,ox,oy,type,frame,flip){
@@ -2145,7 +2147,7 @@ const EQ_OV={
   holy_bow:(c)=>{const f=(x,y,col)=>{c.fillStyle=col;c.fillRect(x,y,1,1)};f(1,6,'#ffd700');f(0,7,'#ffd700');f(0,8,'#ffd700');f(0,9,'#ffd700');f(1,10,'#ffd700');f(2,7,'#eceff1');f(2,8,'#eceff1');f(2,9,'#eceff1');f(1,8,'#e0e0e0')},
   poison_dagger:(c)=>{const f=(x,y,col)=>{c.fillStyle=col;c.fillRect(x,y,1,1)};f(2,6,'#4caf50');f(1,7,'#4caf50');f(2,7,'#69f0ae');f(1,8,'#4caf50');f(2,8,'#4caf50');f(2,9,'#795548');f(2,10,'#5d4037');f(1,10,'#9e9e9e');f(3,10,'#9e9e9e')},
 };
-function EquippedMonster({monster,size=80,anim='float',showStars=true}){
+function EquippedMonsterImpl({monster,size=80,anim='float',showStars=true}){
   const ref=useRef(null);
   const eq=monster.equip||{};
   const lb=monster.lb||0;
@@ -2189,6 +2191,16 @@ function EquippedMonster({monster,size=80,anim='float',showStars=true}){
     {showStars&&stars&&<div style={{fontSize:Math.max(8,size*0.18),lineHeight:1,color:lb>=5?'#e040fb':lb>=3?'#ff9800':'#ffd700',filter:`drop-shadow(0 0 4px ${lb>=5?'#e040fb':lb>=3?'#ff9800':'#ffd700'})`,textShadow:'0 0 8px currentColor'}}>{stars}</div>}
   </div>;
 }
+// React.memo化: モンスターのlb/type/equip/lv が変わらない限り再描画しない
+// （所持リスト100体超でのタブ切替・選択変更を高速化）
+const EquippedMonster=memo(EquippedMonsterImpl,(p,n)=>{
+  return p.size===n.size&&p.anim===n.anim&&p.showStars===n.showStars
+    &&p.monster.id===n.monster.id&&p.monster.type===n.monster.type
+    &&p.monster.lb===n.monster.lb&&p.monster.level===n.monster.level
+    &&p.monster.equip?.hat===n.monster.equip?.hat
+    &&p.monster.equip?.acc===n.monster.equip?.acc
+    &&p.monster.equip?.wpn===n.monster.equip?.wpn;
+});
 
 // ─── HOME SCREEN ─────────────────────────────────────────
 function HomeScreen({s,d}){
@@ -4813,15 +4825,15 @@ function CollectionScreen({s,d}){
     d({type:'RENAME_MONSTER',mId:renameMon.id,name:nm});
     setRenameId(null);
   }
-  // ソート
-  const sortedMonsters=(()=>{
+  // ソート: モンスターリストとsortBy変更時のみ再計算
+  const sortedMonsters=useMemo(()=>{
     const arr=[...s.monsters];
     if(sortBy==='id')arr.sort((a,b)=>a.id-b.id);
     else if(sortBy==='name')arr.sort((a,b)=>(a.name||'').localeCompare(b.name||''));
     else if(sortBy==='rarity')arr.sort((a,b)=>{const dr=RO.indexOf(b.rarity)-RO.indexOf(a.rarity);return dr!==0?dr:(b.lb||0)-(a.lb||0)});
     else if(sortBy==='level')arr.sort((a,b)=>b.level-a.level);
     return arr;
-  })();
+  },[s.monsters,sortBy]);
 
   return <div style={{width:'100%',padding:12,animation:'fadeIn 0.4s ease-out'}}>
     {/* サブタブ */}
