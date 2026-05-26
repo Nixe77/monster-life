@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v2.1.1"; // 天井維持(確定時のみリセット)+ハードモードトグル+プレイヤーLv100+節目報酬+施設Lv100(PL制限/効果半減)
+const APP_VERSION = "v2.1.2"; // パフォーマンス最適化(startQuestのO(N²)解消+QUESTS事前グループ化+POOLグローバル化)
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -402,6 +402,12 @@ const FUSION_MONS={
 
 // ガチャプール（合成限定を除く）
 const POOL=Object.entries(MONS).filter(([k])=>!FUSION_MONS[k]).flatMap(([k,m])=>Array(RW[m.rarity]||1).fill(k));
+// レアリティ別プール（天井確定排出用、事前計算）
+const POOL_BY_RARITY=(()=>{
+  const grp={C:[],R:[],SR:[],UR:[],LR:[]};
+  Object.entries(MONS).forEach(([k,m])=>{if(!FUSION_MONS[k])grp[m.rarity].push(k);});
+  return grp;
+})();
 // ガチャ天井: 規定回数に達するとレア度確定排出
 const GACHA_PITY={
   SR:50,  // 50連でSR以上確定
@@ -843,6 +849,16 @@ const QUESTS={
     trainingLoot:['soul_shard','exp_tome','star_fragment','elixir','exp_tome','soul_shard'],
     nodes:[{t:'enemy',e:'bone_dragon'},{t:'enemy',e:'curse_armor'},{t:'rest',hp:110},{t:'enemy',e:'giant_spider'},{t:'enemy',e:'reaper'},{t:'enemy',e:'bone_dragon'},{t:'enemy',e:'reaper'}]},
 };
+// QUESTSを章ごとにグループ化（描画時の毎回再計算を避けるため事前計算）
+const QUESTS_BY_CHAPTER=(()=>{
+  const grp={};
+  Object.entries(QUESTS).filter(([_,q])=>q.kind==='story').forEach(([k,q])=>{
+    if(!grp[q.chapter])grp[q.chapter]=[];
+    grp[q.chapter].push([k,q]);
+  });
+  return grp;
+})();
+const QUESTS_TRAINING=Object.entries(QUESTS).filter(([_,q])=>q.kind==='training');
 
 // ─── STAT CALCULATION ────────────────────────────────────
 function calcStats(m, equipInventory, facilities, gems){
@@ -1717,9 +1733,8 @@ function reducer(s,a){
     }
     case 'GACHA':{
       const cost=a.n===10?900:100;if(s.coins<cost)return{...s,toast:'コインが足りない！'};
-      // レアリティ別プール（天井時の確定抽選用）
-      const poolByRarity={C:[],R:[],SR:[],UR:[],LR:[]};
-      Object.entries(MONS).forEach(([k,m])=>{if(!FUSION_MONS[k])poolByRarity[m.rarity].push(k);});
+      // レアリティ別プール（事前計算済みのグローバル定数を使用）
+      const poolByRarity=POOL_BY_RARITY;
       let pity={...(s.gachaPity||{sinceSR:0,sinceUR:0,sinceLR:0})};
       const pulled=[];
       const guaranteedFlags=[]; // 天井による確定排出かどうか（演出フラグ）
@@ -2909,9 +2924,9 @@ function QuestScreen({s,d}){
     const q=QUESTS[key];
     let actualHard=useHard;
     if(actualHard&&q?.chapter){
-      // この章の全ステージクリア済みかチェック
-      const chapClear=Object.values(QUESTS).filter(qq=>qq.chapter===q.chapter).every(qq=>s.clearedQuests[Object.keys(QUESTS).find(k=>QUESTS[k]===qq)]);
-      if(!chapClear)actualHard=false; // 解放前は通常モード扱い
+      // O(N) で章全クリア判定: 該当章の最終stage(8)クリアで章クリア扱い
+      // ストーリーは8ステージ構成のため story_{chap}_8 で判定
+      actualHard=!!s.clearedQuests[`story_${q.chapter}_8`];
     }
     const maxHp=stats.maxHp;
     const hp=resetHp?maxHp:Math.max(1,R.current.monHp);
@@ -3216,12 +3231,8 @@ function QuestScreen({s,d}){
       {/* ストーリー: 章別アコーディオン */}
       {questTab==='story'&&(()=>{
         const cleared=s.clearedQuests||{};
-        // 章ごとにグルーピング
-        const byChap={};
-        Object.entries(QUESTS).filter(([_,q])=>q.kind==='story').forEach(([k,q])=>{
-          if(!byChap[q.chapter])byChap[q.chapter]=[];
-          byChap[q.chapter].push([k,q]);
-        });
+        // 章ごとのグループ化はグローバル定数 QUESTS_BY_CHAPTER を使用（毎レンダー再計算しない）
+        const byChap=QUESTS_BY_CHAPTER;
         // 各章の開放判定: 1章=常に開放、2章以降=前章のstage 8 クリアで開放
         const isChapUnlocked=(ch)=>ch===1||cleared[`story_${ch-1}_8`];
         // 表示判定: クリア済みステージ + 「次にプレイ可能な1ステージ」のみ。それ以降は完全非表示
@@ -3243,23 +3254,16 @@ function QuestScreen({s,d}){
           }
           return 6;
         })();
+        // ハード解放判定: O(1) で story_{ch}_8 を見るだけに最適化（一度だけ計算）
+        const anyChapClear=Object.keys(byChap).some(ch=>cleared[`story_${ch}_8`]);
+        const isHard=!!s.settings?.hardMode;
         return <div style={{display:'flex',flexDirection:'column',gap:8}}>
           {/* モード切替トグル */}
-          {(()=>{
-            // ハード解放: 1章でもクリア済みの章があるか
-            const anyChapClear=Object.entries(byChap).some(([ch,qs])=>qs.every(([k])=>cleared[k]));
-            if(!anyChapClear)return null;
-            const isHard=!!s.settings?.hardMode;
-            return <div style={{...CARD,padding:'8px 10px',display:'flex',gap:4,background:isHard?'linear-gradient(135deg,rgba(255,87,34,0.15),rgba(211,47,47,0.10))':'rgba(255,255,255,0.04)',border:`1px solid ${isHard?'#ff572266':'rgba(255,255,255,0.08)'}`}}>
-              <button onClick={()=>d({type:'SET_SETTING',key:'hardMode',value:false})} style={{...FF,flex:1,padding:'8px 0',borderRadius:8,border:'none',cursor:'pointer',background:!isHard?'linear-gradient(135deg,#bf88ff,#7c3aed)':'transparent',color:!isHard?'#fff':'rgba(255,255,255,0.5)',fontSize:11,fontWeight:900}}>▶ 通常</button>
-              <button onClick={()=>d({type:'SET_SETTING',key:'hardMode',value:true})} style={{...FF,flex:1,padding:'8px 0',borderRadius:8,border:'none',cursor:'pointer',background:isHard?'linear-gradient(135deg,#ff5722,#d32f2f)':'transparent',color:isHard?'#fff':'rgba(255,255,255,0.5)',fontSize:11,fontWeight:900}}>🔥 ハード</button>
-            </div>;
-          })()}
-          {(()=>{
-            const isHard=!!s.settings?.hardMode;
-            const anyChapClear=Object.entries(byChap).some(([ch,qs])=>qs.every(([k])=>cleared[k]));
-            return isHard&&anyChapClear&&<div style={{fontSize:9,opacity:0.6,textAlign:'center',padding:'2px 0'}}>🔥 ハード: 敵2倍 / 報酬2倍 / 装備ドロップ率1.5倍 (章クリア済みのみ)</div>;
-          })()}
+          {anyChapClear&&<div style={{...CARD,padding:'8px 10px',display:'flex',gap:4,background:isHard?'linear-gradient(135deg,rgba(255,87,34,0.15),rgba(211,47,47,0.10))':'rgba(255,255,255,0.04)',border:`1px solid ${isHard?'#ff572266':'rgba(255,255,255,0.08)'}`}}>
+            <button onClick={()=>d({type:'SET_SETTING',key:'hardMode',value:false})} style={{...FF,flex:1,padding:'8px 0',borderRadius:8,border:'none',cursor:'pointer',background:!isHard?'linear-gradient(135deg,#bf88ff,#7c3aed)':'transparent',color:!isHard?'#fff':'rgba(255,255,255,0.5)',fontSize:11,fontWeight:900}}>▶ 通常</button>
+            <button onClick={()=>d({type:'SET_SETTING',key:'hardMode',value:true})} style={{...FF,flex:1,padding:'8px 0',borderRadius:8,border:'none',cursor:'pointer',background:isHard?'linear-gradient(135deg,#ff5722,#d32f2f)':'transparent',color:isHard?'#fff':'rgba(255,255,255,0.5)',fontSize:11,fontWeight:900}}>🔥 ハード</button>
+          </div>}
+          {isHard&&anyChapClear&&<div style={{fontSize:9,opacity:0.6,textAlign:'center',padding:'2px 0'}}>🔥 ハード: 敵2倍 / 報酬2倍 / 装備ドロップ率1.5倍 (章クリア済みのみ)</div>}
           {Object.entries(byChap).sort((a,b)=>+a[0]-+b[0]).map(([chap,quests])=>{
             const chNum=+chap;
             const unlocked=isChapUnlocked(chNum);
@@ -3321,7 +3325,7 @@ function QuestScreen({s,d}){
           </div>
           <div style={{fontSize:18,fontWeight:900,color:(s.keys||0)>0?'#ffd700':'#ef5350',textShadow:(s.keys||0)>0?'0 0 8px #ffd700aa':'none'}}>🗝 ×{s.keys||0}</div>
         </div>
-        {Object.entries(QUESTS).filter(([_,q])=>q.kind==='training').map(([key,q])=>{
+        {QUESTS_TRAINING.map(([key,q])=>{
         const keyCost=q.keyCost||1;
         const hasKeys=(s.keys||0)>=keyCost;
         const keyLocked=!hasKeys;
