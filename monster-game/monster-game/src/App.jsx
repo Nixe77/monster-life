@@ -63,7 +63,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v2.2.10"; // ガチャスポットライト: サイズ拡大(180/200px)+物理解像度を表示サイズベースに最大化+左右ボタン&ドット手動操作
+const APP_VERSION = "v2.2.11"; // 図鑑詳細をフルスクリーンモーダル化(背景blur+×ボタン+背景クリック閉じる)+スプライト大型化(MR=320px,通常=280px,約5倍)
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -5019,117 +5019,124 @@ function DexPanel({s,d}){
       ))}
     </div>
 
-    {/* 詳細パネル（選択時のみ） */}
-    {selType&&detail&&<div style={{...CARD,marginBottom:10,padding:12,border:`2px solid ${owned?detail.color:'rgba(255,255,255,0.15)'}`,background:owned?`linear-gradient(135deg,${detail.color}22,rgba(255,255,255,0.04))`:'rgba(255,255,255,0.03)'}}>
-      {/* MR + owned の場合: 大きなアート表示 */}
-      {owned&&mode==='monster'&&MONS[selType]?.rarity==='MR'&&<div style={{display:'flex',justifyContent:'center',marginBottom:10,padding:'10px 0',borderRadius:12,background:`radial-gradient(circle at center, ${detail.color}33 0%, transparent 70%)`,position:'relative',overflow:'hidden'}}>
-        {/* 虹色枠 */}
-        <div style={{position:'absolute',inset:0,borderRadius:12,boxShadow:'inset 0 0 0 2px #ff80ff, inset 0 0 0 4px #ffd700, inset 0 0 0 6px #00e5ff',pointerEvents:'none',opacity:0.45}}/>
-        <MonsterSprite type={selType} size={180} anim="float" mode="art"/>
-      </div>}
-      <div style={{display:'flex',gap:10,alignItems:'center',marginBottom:8}}>
-        {/* MR以外は通常表示 */}
-        {!(owned&&mode==='monster'&&MONS[selType]?.rarity==='MR')&&<div style={{filter:owned?'none':'brightness(0)',opacity:owned?1:0.4}}>
-          <MonsterSprite type={selType} size={56} anim={owned?'float':'none'}/>
+    {/* 詳細パネル（選択時のみ）: フルスクリーンモーダル */}
+    {selType&&detail&&<div
+      onClick={()=>setSelType(null)}
+      style={{position:'fixed',inset:0,background:'rgba(8,2,20,0.85)',backdropFilter:'blur(10px)',zIndex:50,display:'flex',alignItems:'flex-start',justifyContent:'center',padding:'18px 14px',overflowY:'auto',animation:'fadeIn 0.25s ease-out',cursor:'pointer'}}>
+      <div onClick={e=>e.stopPropagation()} style={{width:'100%',maxWidth:460,background:'linear-gradient(165deg,#160630 0%,#0a0220 100%)',border:`2px solid ${owned?detail.color:'rgba(255,255,255,0.15)'}`,borderRadius:18,padding:'42px 16px 18px',position:'relative',boxShadow:owned?`0 0 50px ${detail.color}88, 0 0 100px ${detail.color}44, inset 0 0 30px rgba(0,0,0,0.4)`:'0 0 40px rgba(0,0,0,0.6)',animation:'zoomInCard 0.35s ease-out',cursor:'default',marginTop:'auto',marginBottom:'auto'}}>
+        {/* 戻るボタン */}
+        <button onClick={()=>setSelType(null)} style={{...FF,position:'absolute',top:10,right:10,width:36,height:36,borderRadius:18,border:`1px solid ${owned?detail.color:'rgba(255,255,255,0.25)'}`,background:'rgba(0,0,0,0.55)',color:'#fff',fontSize:18,fontWeight:900,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',backdropFilter:'blur(6px)',zIndex:3,lineHeight:1}}>✕</button>
+        {/* レアリティバッジ（左上） */}
+        <div style={{position:'absolute',top:14,left:14,padding:'4px 10px',borderRadius:8,fontSize:10,fontWeight:900,letterSpacing:1,background:`${RC[detail.rarity]}33`,border:`1px solid ${RC[detail.rarity]}`,color:RC[detail.rarity],zIndex:3}}>{detail.rarity}</div>
+        {/* MR + owned の場合: 超大型アート表示 */}
+        {owned&&mode==='monster'&&MONS[selType]?.rarity==='MR'&&<div style={{display:'flex',justifyContent:'center',marginBottom:12,padding:'14px 0',borderRadius:14,background:`radial-gradient(circle at center, ${detail.color}40 0%, transparent 65%)`,position:'relative',overflow:'hidden'}}>
+          {/* 虹色多重枠 */}
+          <div style={{position:'absolute',inset:6,borderRadius:14,boxShadow:'inset 0 0 0 2px #ff80ff, inset 0 0 0 4px #ffd700, inset 0 0 0 6px #00e5ff',pointerEvents:'none',opacity:0.5}}/>
+          {/* キラキラ装飾 */}
+          {[0,1,2,3,4,5,6,7].map(i=>{
+            const cols=['#ff80ff','#ffd700','#00e5ff'];const c=cols[i%3];
+            return <div key={i} style={{position:'absolute',top:`${10+Math.sin(i*1.7)*30}%`,left:`${(i*13+8)%88}%`,fontSize:13,color:c,opacity:0.6,animation:`twinkle ${1.4+i*0.2}s ease-in-out infinite`,pointerEvents:'none',textShadow:`0 0 6px ${c}`}}>✦</div>;
+          })}
+          <MonsterSprite type={selType} size={320} anim="float" mode="art" quality={2}/>
         </div>}
-        <div style={{flex:1,minWidth:0}}>
-          <div style={{display:'flex',gap:5,alignItems:'center',marginBottom:3,flexWrap:'wrap'}}>
-            <span style={{fontWeight:900,fontSize:13,color:owned?detail.color:'rgba(255,255,255,0.5)'}}>{owned?detail.name:'??????'}</span>
-            <Pill label={detail.rarity} color={RC[detail.rarity]}/>
+        {/* MR以外: 大型スプライト中央表示 */}
+        {!(owned&&mode==='monster'&&MONS[selType]?.rarity==='MR')&&<div style={{display:'flex',justifyContent:'center',marginBottom:12,padding:'12px 0',borderRadius:14,background:`radial-gradient(circle at center, ${(owned?detail.color:'#888')}30 0%, transparent 65%)`,position:'relative',overflow:'hidden'}}>
+          {/* キラキラ装飾（owned時のみ） */}
+          {owned&&[0,1,2,3,4].map(i=><div key={i} style={{position:'absolute',top:`${15+Math.sin(i*1.7)*30}%`,left:`${(i*19+8)%85}%`,fontSize:12,color:detail.color,opacity:0.5,animation:`twinkle ${1.6+i*0.22}s ease-in-out infinite`,pointerEvents:'none',textShadow:`0 0 5px ${detail.color}`}}>✦</div>)}
+          <div style={{filter:owned?'none':'brightness(0)',opacity:owned?1:0.4}}>
+            <MonsterSprite type={selType} size={280} anim={owned?'float':'none'} quality={2}/>
           </div>
-          <div style={{fontSize:9,opacity:owned?0.85:0.4,lineHeight:1.4}}>{owned?detail.desc:'まだ図鑑に登録されていない'}</div>
+        </div>}
+        {/* 名前 + 説明 */}
+        <div style={{textAlign:'center',marginBottom:12}}>
+          <div style={{fontWeight:900,fontSize:18,color:owned?detail.color:'rgba(255,255,255,0.5)',textShadow:owned?`0 0 10px ${detail.color}66`:'none',letterSpacing:1,marginBottom:5}}>{owned?detail.name:'??????'}</div>
+          <div style={{fontSize:11,opacity:owned?0.85:0.4,lineHeight:1.5,padding:'0 6px'}}>{owned?detail.desc:'まだ図鑑に登録されていない'}</div>
         </div>
-      </div>
-      {/* MR専用: 詳細プロフィール */}
-      {owned&&mode==='monster'&&MR_LORE[selType]&&(()=>{
-        const lore=MR_LORE[selType];
-        return <div style={{padding:'12px 13px',borderRadius:10,background:'rgba(0,0,0,0.28)',border:`1px solid ${detail.color}44`,marginBottom:8,fontSize:10,lineHeight:1.6}}>
-          {/* フルネーム + 属性 */}
-          <div style={{marginBottom:8}}>
-            <div style={{fontSize:12,fontWeight:900,color:detail.color,letterSpacing:0.5,textShadow:`0 0 8px ${detail.color}66`}}>{lore.fullName}</div>
-            <div style={{fontSize:9,opacity:0.7,marginTop:2}}>属性: <span style={{fontWeight:700,color:detail.color}}>{lore.element}</span></div>
-          </div>
-          {/* ストーリー */}
-          <div style={{padding:'8px 10px',borderRadius:8,background:'rgba(255,255,255,0.03)',borderLeft:`3px solid ${detail.color}`,marginBottom:8,opacity:0.92,lineHeight:1.65,fontSize:9.5}}>
-            {lore.story}
-          </div>
-          {/* 特殊スキル */}
-          <div style={{padding:'7px 10px',borderRadius:8,background:`linear-gradient(135deg,${detail.color}18,rgba(0,0,0,0.15))`,border:`1px solid ${detail.color}33`,marginBottom:6}}>
-            <div style={{display:'flex',alignItems:'center',gap:5,marginBottom:3,flexWrap:'wrap'}}>
-              <span style={{fontSize:11}}>💥</span>
-              <span style={{fontSize:10,fontWeight:900,color:detail.color}}>必殺技: {lore.specialSkill.name}</span>
-              <span style={{fontSize:8,opacity:0.55}}>({lore.specialSkill.en})</span>
-              <span style={{fontSize:8,fontWeight:900,color:'#ff80ff',padding:'1px 5px',borderRadius:3,background:'rgba(255,128,255,0.15)',border:'1px solid rgba(255,128,255,0.4)'}}>メイン専用</span>
+        {/* MR専用: 詳細プロフィール */}
+        {owned&&mode==='monster'&&MR_LORE[selType]&&(()=>{
+          const lore=MR_LORE[selType];
+          return <div style={{padding:'12px 13px',borderRadius:10,background:'rgba(0,0,0,0.35)',border:`1px solid ${detail.color}44`,marginBottom:10,fontSize:10,lineHeight:1.6}}>
+            {/* フルネーム + 属性 */}
+            <div style={{marginBottom:8}}>
+              <div style={{fontSize:13,fontWeight:900,color:detail.color,letterSpacing:0.5,textShadow:`0 0 8px ${detail.color}66`}}>{lore.fullName}</div>
+              <div style={{fontSize:10,opacity:0.75,marginTop:2}}>属性: <span style={{fontWeight:700,color:detail.color}}>{lore.element}</span></div>
             </div>
-            <div style={{fontSize:9,opacity:0.85,lineHeight:1.5,paddingLeft:18,marginBottom:4}}>{lore.specialSkill.desc}</div>
-            {/* ゲーム内効果（MR_SPECIAL_SKILLS から自動取得） */}
-            {MR_SPECIAL_SKILLS[selType]&&(()=>{
-              const sp=MR_SPECIAL_SKILLS[selType];
-              return <div style={{fontSize:9,padding:'4px 7px',borderRadius:5,background:'rgba(255,128,255,0.08)',borderLeft:`3px solid ${sp.col}`,marginLeft:18}}>
-                <span style={{color:'#ff80ff',fontWeight:900,marginRight:4}}>戦闘効果:</span>
-                <span style={{color:sp.col,fontWeight:700}}>{sp.icon}</span>
-                <span style={{marginLeft:3,opacity:0.9}}>{sp.desc}</span>
-                <span style={{marginLeft:6,fontSize:8,opacity:0.65}}>(CD: {sp.cd}秒)</span>
-              </div>;
-            })()}
-          </div>
-          {/* 戦闘スキル */}
-          <div style={{padding:'7px 10px',borderRadius:8,background:`linear-gradient(135deg,rgba(255,107,157,0.12),rgba(0,0,0,0.15))`,border:'1px solid rgba(255,107,157,0.3)'}}>
-            <div style={{display:'flex',alignItems:'center',gap:5,marginBottom:3}}>
-              <span style={{fontSize:11}}>⚔</span>
-              <span style={{fontSize:10,fontWeight:900,color:'#ff9fcf'}}>戦闘スキル: {lore.battleSkill.name}</span>
-              <span style={{fontSize:8,opacity:0.55}}>({lore.battleSkill.en})</span>
+            {/* ストーリー */}
+            <div style={{padding:'9px 11px',borderRadius:8,background:'rgba(255,255,255,0.04)',borderLeft:`3px solid ${detail.color}`,marginBottom:8,opacity:0.92,lineHeight:1.7,fontSize:10}}>
+              {lore.story}
             </div>
-            <div style={{fontSize:9,opacity:0.85,lineHeight:1.5,paddingLeft:18}}>{lore.battleSkill.desc}</div>
-          </div>
-        </div>;
-      })()}
-      {owned&&<>
-        {(()=>{
-          const isEnemy=mode==='enemy';
-          // 敵の場合は撃退回数で詳細表示を段階アンロック
-          const kills=isEnemy?(s.dex?.enemyDefeats?.[selType]||0):Infinity;
-          const showStats=!isEnemy||kills>=5;
-          const showLoot=!isEnemy||kills>=10;
-          const showRewards=!isEnemy||kills>=20;
-          // 出現する敵のloot配列（撃退回数10回以上で表示）
-          const enemyLoot=isEnemy?(ENEMIES[selType]?.loot||[]):[];
-          return <>
-            {isEnemy&&<div style={{fontSize:9,marginBottom:6,padding:'4px 8px',borderRadius:8,background:'rgba(255,107,157,0.08)',border:'1px solid rgba(255,107,157,0.2)',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-              <span style={{color:'#ff9fcf',fontWeight:900}}>⚔ 撃退回数: {kills}</span>
-              <span style={{fontSize:8,opacity:0.65}}>
-                {kills<5&&`5回でステ開示`}
-                {kills>=5&&kills<10&&`10回で素材開示`}
-                {kills>=10&&kills<20&&`20回で報酬詳細`}
-                {kills>=20&&`✓ 完全解析`}
-              </span>
-            </div>}
-            {/* ステータス（味方は常に表示、敵は5回以上） */}
-            {showStats?<div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:5,marginBottom:8,padding:'8px 0',borderTop:'1px solid rgba(255,255,255,0.08)',borderBottom:'1px solid rgba(255,255,255,0.08)'}}>
-              {[['HP',detail.stats.hp,'#ef5350'],['ATK',detail.stats.atk,'#ff7043'],['DEF',detail.stats.def,'#42a5f5'],['SPD',detail.stats.spd,'#66bb6a'],['LUK',detail.stats.luk,'#ab47bc']].map(([k,v,c])=><div key={k} style={{textAlign:'center'}}>
-                <div style={{fontSize:8,fontWeight:900,color:c}}>{k}</div>
-                <div style={{fontSize:11,fontWeight:700,marginTop:1}}>{v||0}</div>
-              </div>)}
-            </div>:<div style={{padding:'10px 0',borderTop:'1px solid rgba(255,255,255,0.08)',borderBottom:'1px solid rgba(255,255,255,0.08)',marginBottom:8,textAlign:'center',fontSize:10,opacity:0.4}}>🔒 ステータス（撃退5回で解放）</div>}
-            {/* 味方のスキル情報 */}
-            {!isEnemy&&detail.skill&&<div style={{fontSize:10,padding:'6px 0'}}>
-              <div style={{fontWeight:900,color:'#bf88ff',marginBottom:2}}>{detail.skill.icon} {detail.skill.name}</div>
-              <div style={{opacity:0.75,lineHeight:1.4}}>{detail.skill.desc}</div>
-            </div>}
-            {/* 敵のドロップ素材（10回以上） */}
-            {isEnemy&&(showLoot?<div style={{fontSize:10,padding:'6px 0'}}>
-              <div style={{fontWeight:900,color:'#66bb6a',marginBottom:4}}>🎒 ドロップ素材</div>
-              {enemyLoot.length>0?<div style={{display:'flex',flexWrap:'wrap',gap:6}}>
-                {[...new Set(enemyLoot)].map(k=>ITEMS[k]?<div key={k} style={{display:'flex',alignItems:'center',gap:3,fontSize:9,padding:'3px 7px',borderRadius:8,background:'rgba(102,187,106,0.1)',border:'1px solid rgba(102,187,106,0.3)'}}><ItemIcon k={k} size={14} gap={2}/>{ITEMS[k].name}</div>:null)}
-              </div>:<div style={{fontSize:9,opacity:0.55}}>ドロップなし</div>}
-            </div>:<div style={{fontSize:10,padding:'8px 0',opacity:0.4,textAlign:'center'}}>🔒 ドロップ素材（撃退10回で解放）</div>)}
-            {/* 敵の撃破報酬詳細（20回以上） */}
-            {isEnemy&&(showRewards?<div style={{fontSize:9,opacity:0.8,marginTop:4,padding:'5px 8px',borderRadius:8,background:'rgba(255,215,0,0.05)',border:'1px solid rgba(255,215,0,0.2)'}}>
-              <span style={{color:'#ffd700',fontWeight:900}}>💰 撃破報酬</span>　XP+{detail.xp||0} / 💰+{detail.gold||0}
-            </div>:<div style={{fontSize:10,padding:'8px 0',opacity:0.4,textAlign:'center'}}>🔒 撃破報酬詳細（撃退20回で解放）</div>)}
-          </>;
+            {/* 特殊スキル */}
+            <div style={{padding:'8px 11px',borderRadius:8,background:`linear-gradient(135deg,${detail.color}1c,rgba(0,0,0,0.18))`,border:`1px solid ${detail.color}33`,marginBottom:7}}>
+              <div style={{display:'flex',alignItems:'center',gap:5,marginBottom:4,flexWrap:'wrap'}}>
+                <span style={{fontSize:12}}>💥</span>
+                <span style={{fontSize:11,fontWeight:900,color:detail.color}}>必殺技: {lore.specialSkill.name}</span>
+                <span style={{fontSize:9,opacity:0.55}}>({lore.specialSkill.en})</span>
+                <span style={{fontSize:8,fontWeight:900,color:'#ff80ff',padding:'1px 5px',borderRadius:3,background:'rgba(255,128,255,0.15)',border:'1px solid rgba(255,128,255,0.4)'}}>メイン専用</span>
+              </div>
+              <div style={{fontSize:10,opacity:0.85,lineHeight:1.55,paddingLeft:20,marginBottom:5}}>{lore.specialSkill.desc}</div>
+              {/* ゲーム内効果 */}
+              {MR_SPECIAL_SKILLS[selType]&&(()=>{
+                const sp=MR_SPECIAL_SKILLS[selType];
+                return <div style={{fontSize:9.5,padding:'5px 8px',borderRadius:6,background:'rgba(255,128,255,0.1)',borderLeft:`3px solid ${sp.col}`,marginLeft:20}}>
+                  <span style={{color:'#ff80ff',fontWeight:900,marginRight:4}}>戦闘効果:</span>
+                  <span style={{color:sp.col,fontWeight:700}}>{sp.icon}</span>
+                  <span style={{marginLeft:3,opacity:0.9}}>{sp.desc}</span>
+                  <span style={{marginLeft:6,fontSize:8,opacity:0.65}}>(CD: {sp.cd}秒)</span>
+                </div>;
+              })()}
+            </div>
+            {/* 戦闘スキル */}
+            <div style={{padding:'8px 11px',borderRadius:8,background:`linear-gradient(135deg,rgba(255,107,157,0.14),rgba(0,0,0,0.18))`,border:'1px solid rgba(255,107,157,0.3)'}}>
+              <div style={{display:'flex',alignItems:'center',gap:5,marginBottom:4}}>
+                <span style={{fontSize:12}}>⚔</span>
+                <span style={{fontSize:11,fontWeight:900,color:'#ff9fcf'}}>戦闘スキル: {lore.battleSkill.name}</span>
+                <span style={{fontSize:9,opacity:0.55}}>({lore.battleSkill.en})</span>
+              </div>
+              <div style={{fontSize:10,opacity:0.85,lineHeight:1.55,paddingLeft:20}}>{lore.battleSkill.desc}</div>
+            </div>
+          </div>;
         })()}
-      </>}
+        {owned&&<>
+          {(()=>{
+            const isEnemy=mode==='enemy';
+            const kills=isEnemy?(s.dex?.enemyDefeats?.[selType]||0):Infinity;
+            const showStats=!isEnemy||kills>=5;
+            const showLoot=!isEnemy||kills>=10;
+            const showRewards=!isEnemy||kills>=20;
+            const enemyLoot=isEnemy?(ENEMIES[selType]?.loot||[]):[];
+            return <>
+              {isEnemy&&<div style={{fontSize:10,marginBottom:8,padding:'5px 10px',borderRadius:8,background:'rgba(255,107,157,0.08)',border:'1px solid rgba(255,107,157,0.2)',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <span style={{color:'#ff9fcf',fontWeight:900}}>⚔ 撃退回数: {kills}</span>
+                <span style={{fontSize:9,opacity:0.65}}>
+                  {kills<5&&`5回でステ開示`}
+                  {kills>=5&&kills<10&&`10回で素材開示`}
+                  {kills>=10&&kills<20&&`20回で報酬詳細`}
+                  {kills>=20&&`✓ 完全解析`}
+                </span>
+              </div>}
+              {showStats?<div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:6,marginBottom:10,padding:'10px 4px',borderTop:'1px solid rgba(255,255,255,0.08)',borderBottom:'1px solid rgba(255,255,255,0.08)'}}>
+                {[['HP',detail.stats.hp,'#ef5350'],['ATK',detail.stats.atk,'#ff7043'],['DEF',detail.stats.def,'#42a5f5'],['SPD',detail.stats.spd,'#66bb6a'],['LUK',detail.stats.luk,'#ab47bc']].map(([k,v,c])=><div key={k} style={{textAlign:'center'}}>
+                  <div style={{fontSize:9,fontWeight:900,color:c}}>{k}</div>
+                  <div style={{fontSize:13,fontWeight:700,marginTop:2}}>{v||0}</div>
+                </div>)}
+              </div>:<div style={{padding:'12px 0',borderTop:'1px solid rgba(255,255,255,0.08)',borderBottom:'1px solid rgba(255,255,255,0.08)',marginBottom:10,textAlign:'center',fontSize:11,opacity:0.4}}>🔒 ステータス（撃退5回で解放）</div>}
+              {!isEnemy&&detail.skill&&<div style={{fontSize:11,padding:'8px 4px'}}>
+                <div style={{fontWeight:900,color:'#bf88ff',marginBottom:3}}>{detail.skill.icon} {detail.skill.name}</div>
+                <div style={{opacity:0.78,lineHeight:1.5,fontSize:10}}>{detail.skill.desc}</div>
+              </div>}
+              {isEnemy&&(showLoot?<div style={{fontSize:11,padding:'8px 4px'}}>
+                <div style={{fontWeight:900,color:'#66bb6a',marginBottom:5}}>🎒 ドロップ素材</div>
+                {enemyLoot.length>0?<div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+                  {[...new Set(enemyLoot)].map(k=>ITEMS[k]?<div key={k} style={{display:'flex',alignItems:'center',gap:3,fontSize:10,padding:'3px 8px',borderRadius:8,background:'rgba(102,187,106,0.1)',border:'1px solid rgba(102,187,106,0.3)'}}><ItemIcon k={k} size={16} gap={2}/>{ITEMS[k].name}</div>:null)}
+                </div>:<div style={{fontSize:10,opacity:0.55}}>ドロップなし</div>}
+              </div>:<div style={{fontSize:11,padding:'10px 0',opacity:0.4,textAlign:'center'}}>🔒 ドロップ素材（撃退10回で解放）</div>)}
+              {isEnemy&&(showRewards?<div style={{fontSize:10,opacity:0.85,marginTop:6,padding:'6px 9px',borderRadius:8,background:'rgba(255,215,0,0.05)',border:'1px solid rgba(255,215,0,0.2)'}}>
+                <span style={{color:'#ffd700',fontWeight:900}}>💰 撃破報酬</span>　XP+{detail.xp||0} / 💰+{detail.gold||0}
+              </div>:<div style={{fontSize:11,padding:'10px 0',opacity:0.4,textAlign:'center'}}>🔒 撃破報酬詳細（撃退20回で解放）</div>)}
+            </>;
+          })()}
+        </>}
+      </div>
     </div>}
 
     {/* グリッド */}
