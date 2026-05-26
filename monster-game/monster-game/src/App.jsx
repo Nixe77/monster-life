@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v2.1.6"; // ガチャ演出スキップ設定+100連ガチャ(コイン9000/ダイヤ4500)+クエストストーリー(8シーン)
+const APP_VERSION = "v2.1.7"; // ストーリー再生バグ修正(select画面にStoryPlayer追加+complete時のレンダー中setStateをuseEffect化)
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -3567,6 +3567,8 @@ function QuestScreen({s,d}){
   const lootSummary=Object.entries(loot.reduce((a,k)=>{a[k]=(a[k]||0)+1;return a},{}));
 
   if(phase==='select') return <div style={{width:'100%',padding:14,animation:'fadeIn 0.4s ease-out'}}>
+    {/* ストーリーシーン再生中（最前面） */}
+    {storyPlay&&<StoryPlayer storyKey={storyPlay.key} scene={storyPlay.scene} onDone={storyPlay.onComplete}/>}
     <div style={{...CARD,textAlign:'center',marginBottom:14}}>
       <div style={{fontSize:17,fontWeight:900}}>⚔ 素材クエスト</div>
       <div style={{fontSize:11,opacity:0.55,marginTop:2}}>冒険して素材を集め、お店で売ろう</div>
@@ -3719,20 +3721,21 @@ function QuestScreen({s,d}){
     </div>
   </div>;
 
-  if(phase==='complete'||phase==='fail') {
-    // postストーリー: 未読なら先に再生
-    if(phase==='complete'&&qKey){
-      const postKey=`${qKey}:post`;
-      const postScene=STORY_SCENES[postKey];
-      const postViewed=!!s.viewedStories?.[postKey];
-      if(postScene&&!postViewed&&!storyPlay){
-        // 先に既読フラグを立てて再帰的に発火しないよう state にセット
-        setStoryPlay({key:postKey,scene:postScene,onComplete:()=>{
-          d({type:'MARK_STORY_VIEWED',key:postKey});
-          setStoryPlay(null);
-        }});
-      }
+  // postストーリー: complete遷移時に未読なら再生（レンダー中のsetStateを避けるためuseEffect）
+  useEffect(()=>{
+    if(phase!=='complete'||!qKey||storyPlay)return;
+    const postKey=`${qKey}:post`;
+    const postScene=STORY_SCENES[postKey];
+    const postViewed=!!s.viewedStories?.[postKey];
+    if(postScene&&!postViewed){
+      setStoryPlay({key:postKey,scene:postScene,onComplete:()=>{
+        d({type:'MARK_STORY_VIEWED',key:postKey});
+        setStoryPlay(null);
+      }});
     }
+  },[phase,qKey]);
+
+  if(phase==='complete'||phase==='fail') {
     return <div style={{width:'100%',padding:14,animation:'fadeIn 0.4s ease-out',textAlign:'center'}}>
     {/* ストーリーシーン再生中（最前面） */}
     {storyPlay&&<StoryPlayer storyKey={storyPlay.key} scene={storyPlay.scene} onDone={storyPlay.onComplete}/>}
