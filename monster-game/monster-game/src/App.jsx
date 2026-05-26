@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v2.1.5"; // フェーズ2完成: デイリーミッション+連続ログインボーナス+ダイヤガチャ(SR+2倍/10連SR確定/天井30-60-200)
+const APP_VERSION = "v2.1.6"; // ガチャ演出スキップ設定+100連ガチャ(コイン9000/ダイヤ4500)+クエストストーリー(8シーン)
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -871,6 +871,78 @@ const QUESTS_BY_CHAPTER=(()=>{
   return grp;
 })();
 const QUESTS_TRAINING=Object.entries(QUESTS).filter(([_,q])=>q.kind==='training');
+// ─── クエストストーリー ─────────────────────────────────
+// クエスト開始時 (when:'pre') / クリア後 (when:'post') に表示する物語シーン
+// scenes: [{speaker, sprite, text}] / speaker:話者名 (null=ナレーション) / sprite:モンスター種別キー or null / text:本文
+const STORY_SCENES={
+  'story_1_1:pre':{
+    title:'プロローグ：旅立ち',
+    scenes:[
+      {speaker:null,sprite:null,text:'──ここは魔物の力で平穏が保たれていた世界。だが、その均衡が崩れ始めていた。'},
+      {speaker:'もふるん',sprite:'mofurun',text:'ねぇねぇ、この先の墓場、なんだかザワザワしてるよ…'},
+      {speaker:null,sprite:null,text:'最初の冒険が始まる。'},
+    ],
+  },
+  'story_1_8:post':{
+    title:'1章 終幕：墓場の影',
+    scenes:[
+      {speaker:null,sprite:null,text:'墓場の主を倒すと、土の中から古い羊皮紙が現れた。'},
+      {speaker:'もふるん',sprite:'mofurun',text:'これ……地図かな？　次の場所が描いてある。'},
+      {speaker:null,sprite:null,text:'地図は森の奥へと続いていた。冒険はまだ序の口だ。'},
+    ],
+  },
+  'story_2_1:pre':{
+    title:'2章：呪われた森へ',
+    scenes:[
+      {speaker:null,sprite:null,text:'木々がざわめき、どこからともなく呪詛の声が聞こえる。'},
+      {speaker:'りふりん',sprite:'rifurin',text:'ふぅ……森って、思ったより冷えるんだね。'},
+      {speaker:null,sprite:null,text:'仲間が増え、パーティは森の奥を目指す。'},
+    ],
+  },
+  'story_3_1:pre':{
+    title:'3章：氷の山脈',
+    scenes:[
+      {speaker:null,sprite:null,text:'冷たい風が頬を切り、足跡は瞬く間に雪に消えていく。'},
+      {speaker:'もふるん',sprite:'mofurun',text:'むぅ……寒すぎて、毛がフワフワにならない…'},
+      {speaker:null,sprite:null,text:'山頂には何かが眠っているという伝説が、ふと脳裏をよぎった。'},
+    ],
+  },
+  'story_4_1:pre':{
+    title:'4章：燃え盛る火山',
+    scenes:[
+      {speaker:null,sprite:null,text:'空に立ち昇る赤い柱。大地が脈打ち、足下から熱気が立ち上る。'},
+      {speaker:'もふるん',sprite:'mofurun',text:'うう…足の肉球がジリジリする…'},
+      {speaker:null,sprite:null,text:'この熱は自然のものではない。何かが目覚めようとしている。'},
+    ],
+  },
+  'story_5_1:pre':{
+    title:'5章：失われた古代遺跡',
+    scenes:[
+      {speaker:null,sprite:null,text:'砂と苔に埋もれた巨大な扉。古代文字が淡く光っている。'},
+      {speaker:null,sprite:null,text:'扉の奥から、太古の風が吹き抜けた──まるで何かに招かれているかのように。'},
+    ],
+  },
+  'story_6_1:pre':{
+    title:'最終章：魔界の頂',
+    scenes:[
+      {speaker:null,sprite:null,text:'空が割れ、闇が地に降りる。世界の均衡を崩した「何か」が、すぐそこにいる。'},
+      {speaker:'もふるん',sprite:'mofurun',text:'……ここまで、長かったね。'},
+      {speaker:null,sprite:null,text:'最後の戦いが始まる。'},
+    ],
+  },
+  'story_6_8:post':{
+    title:'エピローグ',
+    scenes:[
+      {speaker:null,sprite:null,text:'魔王は静かに崩れ落ちた。世界に再び光が差す。'},
+      {speaker:'もふるん',sprite:'mofurun',text:'……これで、終わり、なのかな？'},
+      {speaker:null,sprite:null,text:'いいえ。冒険はまだ続く。新しい物語が、いま始まろうとしている──'},
+    ],
+  },
+};
+function getStoryScene(questKey,when){
+  // when: 'pre' | 'post'
+  return STORY_SCENES[`${questKey}:${when}`]||null;
+}
 
 // ─── STAT CALCULATION ────────────────────────────────────
 function calcStats(m, equipInventory, facilities, gems){
@@ -926,9 +998,10 @@ const DEFAULT_STATE={coins:400,diamonds:0,monsters:[{...mkMon('mofurun',1),name:
   giftReleaseV1:true, // プレゼントBOXリリース記念配布完了フラグ - 新規プレイヤーは配布済み扱い
   gachaPity:{sinceSR:0,sinceUR:0,sinceLR:0}, // ガチャ天井カウンタ（コインガチャ）
   diamondPity:{sinceSR:0,sinceUR:0,sinceLR:0}, // ダイヤガチャ天井カウンタ
+  viewedStories:{}, // {'story_1_1:pre': true} 既読フラグ
   daily:{date:null,loginStreak:0,lastLogin:null,missions:[],bonusClaimed:false}, // デイリーミッション+ログインボーナス
   shop:{listings:[],pendingGold:0},facilities:{},
-  settings:{battleSpeed:1, animations:true, autoNextNode:true, confirmSell:true, hardMode:false}, // 戦闘速度・アニメON/OFF等
+  settings:{battleSpeed:1, animations:true, autoNextNode:true, confirmSell:true, hardMode:false, skipGachaAnim:false}, // 戦闘速度・アニメON/OFF等
   screen:'home',toast:null};
 // プレイヤーLvに必要なXP累計（index=Lv-1, [0]はLv1→Lv2に必要なXP）
 // Lv30まで既存数値を維持、Lv31以降は緩やかなカーブで延長 (Lv100で約160万XP/Lv)
@@ -1162,6 +1235,7 @@ function migrateSave(p){
       sinceUR:typeof p.diamondPity?.sinceUR==='number'?p.diamondPity.sinceUR:0,
       sinceLR:typeof p.diamondPity?.sinceLR==='number'?p.diamondPity.sinceLR:0,
     },
+    viewedStories:p.viewedStories&&typeof p.viewedStories==='object'?p.viewedStories:{},
     // デイリーミッション（旧セーブには存在しない → 空で初期化、初回ログイン時に自動生成）
     daily:{
       date:p.daily?.date||null,
@@ -1831,7 +1905,7 @@ function reducer(s,a){
       return{...s,monsters:mons,toast:`✏ ${name.trim()}に改名した！`};
     }
     case 'GACHA':{
-      const cost=a.n===10?900:100;if(s.coins<cost)return{...s,toast:'コインが足りない！'};
+      const cost=a.n===100?9000:a.n===10?900:100;if(s.coins<cost)return{...s,toast:'コインが足りない！'};
       // レアリティ別プール（事前計算済みのグローバル定数を使用）
       const poolByRarity=POOL_BY_RARITY;
       let pity={...(s.gachaPity||{sinceSR:0,sinceUR:0,sinceLR:0})};
@@ -1898,16 +1972,19 @@ function reducer(s,a){
     case 'GACHA_NEXT':{if(!s.gacha)return s;const ni=s.gacha.idx+1;if(ni>=s.gacha.results.length)return{...s,gacha:null};return{...s,gacha:{...s.gacha,idx:ni}};}
     case 'GACHA_DONE':return{...s,gacha:null};
     case 'DIAMOND_GACHA':{
-      // ダイヤガチャ: 単発50💎 / 10連450💎
-      const cost=a.n===10?450:50;
+      // ダイヤガチャ: 単発50💎 / 10連450💎 / 100連4500💎
+      const cost=a.n===100?4500:a.n===10?450:50;
       if((s.diamonds||0)<cost)return{...s,toast:'ダイヤが足りない！'};
       const poolByRarity=POOL_BY_RARITY;
       let pity={...(s.diamondPity||{sinceSR:0,sinceUR:0,sinceLR:0})};
       const pulled=[];
       const guaranteedFlags=[];
-      // 10連の場合は最後の1個でSR+確定（既に天井条件が満たされてれば天井優先）
-      const guaranteeAtIndex=a.n===10?9:-1;
-      let srHitInPull=false;
+      // 10連以上の場合、10連単位ごとにSR+確定枠を用意
+      // 例: 100連は10/20/.../100の各10番目で「未排出ならSR+確定」を発動
+      const guaranteeIndices=new Set();
+      if(a.n===10)guaranteeIndices.add(9);
+      else if(a.n===100)for(let g=9;g<100;g+=10)guaranteeIndices.add(g);
+      let srHitInBlock=false;
       for(let i=0;i<a.n;i++){
         pity.sinceSR++;pity.sinceUR++;pity.sinceLR++;
         let type,guaranteed=null;
@@ -1917,15 +1994,17 @@ function reducer(s,a){
           const pool=[...poolByRarity.UR,...poolByRarity.LR];type=pool[Math.floor(Math.random()*pool.length)]||POOL_DIAMOND[0];guaranteed='UR';
         }else if(pity.sinceSR>=DIAMOND_PITY.SR){
           const pool=[...poolByRarity.SR,...poolByRarity.UR,...poolByRarity.LR];type=pool[Math.floor(Math.random()*pool.length)]||POOL_DIAMOND[0];guaranteed='SR';
-        }else if(i===guaranteeAtIndex&&!srHitInPull){
-          // 10連の最後で、まだSR+が1体も出ていなければSR以上確定
+        }else if(guaranteeIndices.has(i)&&!srHitInBlock){
+          // 10連ブロックの最後で、まだSR+が出ていなければSR以上確定
           const pool=[...poolByRarity.SR,...poolByRarity.UR,...poolByRarity.LR];type=pool[Math.floor(Math.random()*pool.length)]||POOL_DIAMOND[0];guaranteed='SR10';
         }else{
           type=POOL_DIAMOND[Math.floor(Math.random()*POOL_DIAMOND.length)];
         }
         pulled.push(type);guaranteedFlags.push(guaranteed);
         const r=MONS[type].rarity;
-        if(['SR','UR','LR'].includes(r))srHitInPull=true;
+        if(['SR','UR','LR'].includes(r))srHitInBlock=true;
+        // 10連ブロックの最後でブロック内SR排出フラグをリセット
+        if((i+1)%10===0)srHitInBlock=false;
         // カウンタリセットは天井確定排出時のみ
         if(guaranteed==='LR'){pity.sinceLR=0;pity.sinceUR=0;pity.sinceSR=0;}
         else if(guaranteed==='UR'){pity.sinceUR=0;pity.sinceSR=0;}
@@ -1967,6 +2046,11 @@ function reducer(s,a){
       const pending=s.dex?.pendingDiamonds||0;
       if(pending<=0)return{...s,toast:'受け取れるダイヤがありません'};
       return{...s,diamonds:(s.diamonds||0)+pending,dex:{...s.dex,pendingDiamonds:0},toast:`💎+${pending} 受け取った！`};
+    }
+    case 'MARK_STORY_VIEWED':{
+      // ストーリーを既読にする (a.key = 'story_1_1:pre' 形式)
+      if(!a.key)return s;
+      return{...s,viewedStories:{...(s.viewedStories||{}),[a.key]:true}};
     }
     case 'DAILY_CHECK':{
       // ゲーム起動時/日付変更時に呼ぶ: ミッション生成 + ログインボーナス配布
@@ -3043,6 +3127,8 @@ function QuestScreen({s,d}){
   const [questTab,setQuestTab]=useState('story');
   // クリア済み章を自動で展開、未クリア最大章を展開、それ以外は折りたたみ
   const [expandedChap,setExpandedChap]=useState(null);
+  // ストーリー再生中: {key:'story_1_1:pre', scene:{...}, onComplete:()=>void}
+  const [storyPlay,setStoryPlay]=useState(null);
   const [phase,setPhase]=useState('select');
   const [qKey,setQKey]=useState(null);
   const [nodeIdx,setNodeIdx]=useState(0);
@@ -3165,18 +3251,8 @@ function QuestScreen({s,d}){
     }
   },[phase]);
 
-  function startQuest(key,resetHp=true,hardMode){
-    if(!pm||!stats)return;
-    // 引数未指定なら settings.hardMode を参照（次クエストでも維持）
-    const useHard=typeof hardMode==='boolean'?hardMode:!!s.settings?.hardMode;
-    // ハードモードは章クリア後にのみ有効化（解放されてない章で誤ハードを防ぐ）
-    const q=QUESTS[key];
-    let actualHard=useHard;
-    if(actualHard&&q?.chapter){
-      // O(N) で章全クリア判定: 該当章の最終stage(8)クリアで章クリア扱い
-      // ストーリーは8ステージ構成のため story_{chap}_8 で判定
-      actualHard=!!s.clearedQuests[`story_${q.chapter}_8`];
-    }
+  // 実クエスト開始（pre ストーリー再生後または既読時に呼ばれる）
+  function _runQuest(key,resetHp,actualHard){
     const maxHp=stats.maxHp;
     const hp=resetHp?maxHp:Math.max(1,R.current.monHp);
     R.current={monHp:hp,enemies:[],activeIdx:0,loot:[],xp:0,keyDrops:0,equipDrops:[],defeatedTypes:[],enemyKills:{},qKey:key,hardMode:actualHard,nodeIdx:0,cphase:'ready',phase:'quest',
@@ -3186,6 +3262,30 @@ function QuestScreen({s,d}){
     setSubGauges([0,0,0,0]);setSubFlash([false,false,false,false]);
     setPhase('quest');setCphase('ready');setDmg(null);
     processNodeFn(key,0,hp,[]);
+  }
+  function startQuest(key,resetHp=true,hardMode){
+    if(!pm||!stats)return;
+    // 引数未指定なら settings.hardMode を参照（次クエストでも維持）
+    const useHard=typeof hardMode==='boolean'?hardMode:!!s.settings?.hardMode;
+    // ハードモードは章クリア後にのみ有効化（解放されてない章で誤ハードを防ぐ）
+    const q=QUESTS[key];
+    let actualHard=useHard;
+    if(actualHard&&q?.chapter){
+      actualHard=!!s.clearedQuests[`story_${q.chapter}_8`];
+    }
+    // ストーリーチェック: pre が未読なら先に再生、後でクエスト開始
+    const preKey=`${key}:pre`;
+    const preScene=STORY_SCENES[preKey];
+    const preViewed=!!s.viewedStories?.[preKey];
+    if(preScene&&!preViewed){
+      setStoryPlay({key:preKey,scene:preScene,onComplete:()=>{
+        d({type:'MARK_STORY_VIEWED',key:preKey});
+        setStoryPlay(null);
+        _runQuest(key,resetHp,actualHard);
+      }});
+      return;
+    }
+    _runQuest(key,resetHp,actualHard);
   }
 
   function processNodeFn(key,idx,hp,curLoot){
@@ -3540,25 +3640,40 @@ function QuestScreen({s,d}){
                   const isNext=isNextStage(chNum,q.stage);
                   const hardUnlocked=chapClear;
                   const hardActive=s.settings?.hardMode&&hardUnlocked;
-                  return <button key={key} onClick={()=>startQuest(key)}
-                    style={{...CARD,...FF,display:'flex',gap:10,alignItems:'center',cursor:'pointer',padding:'10px 12px',
-                      border:`1px solid ${hardActive?'#ff572266':isNext?'#ffd700aa':q.rankCol+'66'}`,
-                      background:isClear?'rgba(255,255,255,0.04)':q.bg,
-                      animation:isNext?'pulse 2.5s ease-in-out infinite':undefined,
-                      boxShadow:hardActive?'0 0 12px rgba(255,87,34,0.25)':isNext?'0 0 12px rgba(255,215,0,0.18)':undefined}}>
-                    <div style={{minWidth:34,textAlign:'center'}}>
-                      <div style={{fontSize:10,fontWeight:900,color:isClear?'#66bb6a':isNext?'#ffd700':'#ffd700'}}>{isClear?'✓':q.isBoss?'👑':'⚔'}</div>
-                      <div style={{fontSize:14,fontWeight:900,marginTop:2}}>{q.stage}</div>
-                    </div>
-                    <div style={{flex:1,textAlign:'left'}}>
-                      <div style={{fontWeight:900,fontSize:13,color:isNext?'#ffd700':undefined}}>{q.name}{q.isBoss&&<span style={{marginLeft:5,fontSize:9,color:'#ff5722'}}>BOSS</span>}{isNext&&<span style={{marginLeft:6,fontSize:8,color:'#ffd700',background:'rgba(255,215,0,0.15)',padding:'1px 5px',borderRadius:6}}>NEW</span>}{isHardClear&&<span style={{marginLeft:5,fontSize:8,color:'#ff5722',background:'rgba(255,87,34,0.15)',padding:'1px 5px',borderRadius:6}}>🔥H</span>}</div>
-                      <div style={{fontSize:10,opacity:0.6,marginTop:2}}>
-                        {q.nodes.filter(n=>n.t==='enemy'||n.t==='boss').map(n=>ENEMIES[n.e]?.icon).join(' ')}
-                        {q.nodes.some(n=>n.t==='chest')&&<span style={{marginLeft:6,fontSize:11}}>📦</span>}
+                  // ストーリーシーンの有無
+                  const hasPre=!!STORY_SCENES[`${key}:pre`];
+                  const hasPost=!!STORY_SCENES[`${key}:post`];
+                  const preViewed=!!s.viewedStories?.[`${key}:pre`];
+                  const postViewed=!!s.viewedStories?.[`${key}:post`];
+                  const hasViewableStory=(hasPre&&preViewed)||(hasPost&&postViewed);
+                  return <div key={key} style={{position:'relative'}}>
+                    <button onClick={()=>startQuest(key)}
+                      style={{...CARD,...FF,display:'flex',gap:10,alignItems:'center',cursor:'pointer',padding:'10px 12px',width:'100%',
+                        border:`1px solid ${hardActive?'#ff572266':isNext?'#ffd700aa':q.rankCol+'66'}`,
+                        background:isClear?'rgba(255,255,255,0.04)':q.bg,
+                        animation:isNext?'pulse 2.5s ease-in-out infinite':undefined,
+                        boxShadow:hardActive?'0 0 12px rgba(255,87,34,0.25)':isNext?'0 0 12px rgba(255,215,0,0.18)':undefined}}>
+                      <div style={{minWidth:34,textAlign:'center'}}>
+                        <div style={{fontSize:10,fontWeight:900,color:isClear?'#66bb6a':isNext?'#ffd700':'#ffd700'}}>{isClear?'✓':q.isBoss?'👑':'⚔'}</div>
+                        <div style={{fontSize:14,fontWeight:900,marginTop:2}}>{q.stage}</div>
                       </div>
-                    </div>
-                    <div style={{fontSize:16,opacity:0.7,color:hardActive?'#ff5722':isNext?'#ffd700':undefined}}>{hardActive?'🔥':'▶'}</div>
-                  </button>;
+                      <div style={{flex:1,textAlign:'left'}}>
+                        <div style={{fontWeight:900,fontSize:13,color:isNext?'#ffd700':undefined}}>{q.name}{q.isBoss&&<span style={{marginLeft:5,fontSize:9,color:'#ff5722'}}>BOSS</span>}{isNext&&<span style={{marginLeft:6,fontSize:8,color:'#ffd700',background:'rgba(255,215,0,0.15)',padding:'1px 5px',borderRadius:6}}>NEW</span>}{(hasPre||hasPost)&&<span style={{marginLeft:5,fontSize:8,color:'#ff9fcf',background:'rgba(255,159,207,0.15)',padding:'1px 5px',borderRadius:6}}>📖</span>}{isHardClear&&<span style={{marginLeft:5,fontSize:8,color:'#ff5722',background:'rgba(255,87,34,0.15)',padding:'1px 5px',borderRadius:6}}>🔥H</span>}</div>
+                        <div style={{fontSize:10,opacity:0.6,marginTop:2}}>
+                          {q.nodes.filter(n=>n.t==='enemy'||n.t==='boss').map(n=>ENEMIES[n.e]?.icon).join(' ')}
+                          {q.nodes.some(n=>n.t==='chest')&&<span style={{marginLeft:6,fontSize:11}}>📦</span>}
+                        </div>
+                      </div>
+                      <div style={{fontSize:16,opacity:0.7,color:hardActive?'#ff5722':isNext?'#ffd700':undefined}}>{hardActive?'🔥':'▶'}</div>
+                    </button>
+                    {/* ストーリー再視聴ボタン: 既読シーンがあれば右上に小さく */}
+                    {hasViewableStory&&<button onClick={(e)=>{e.stopPropagation();
+                      // 優先: pre が既読なら pre、post が既読なら post を再生
+                      const sk=hasPre&&preViewed?`${key}:pre`:`${key}:post`;
+                      const sc=STORY_SCENES[sk];
+                      if(sc)setStoryPlay({key:sk,scene:sc,onComplete:()=>setStoryPlay(null)});
+                    }} style={{...FF,position:'absolute',top:6,right:6,padding:'3px 7px',borderRadius:8,border:'1px solid rgba(255,159,207,0.4)',background:'rgba(255,159,207,0.12)',color:'#ff9fcf',cursor:'pointer',fontSize:9,fontWeight:900}}>📖 再生</button>}
+                  </div>;
                 })}
               </div>}
             </div>;
@@ -3604,7 +3719,23 @@ function QuestScreen({s,d}){
     </div>
   </div>;
 
-  if(phase==='complete'||phase==='fail') return <div style={{width:'100%',padding:14,animation:'fadeIn 0.4s ease-out',textAlign:'center'}}>
+  if(phase==='complete'||phase==='fail') {
+    // postストーリー: 未読なら先に再生
+    if(phase==='complete'&&qKey){
+      const postKey=`${qKey}:post`;
+      const postScene=STORY_SCENES[postKey];
+      const postViewed=!!s.viewedStories?.[postKey];
+      if(postScene&&!postViewed&&!storyPlay){
+        // 先に既読フラグを立てて再帰的に発火しないよう state にセット
+        setStoryPlay({key:postKey,scene:postScene,onComplete:()=>{
+          d({type:'MARK_STORY_VIEWED',key:postKey});
+          setStoryPlay(null);
+        }});
+      }
+    }
+    return <div style={{width:'100%',padding:14,animation:'fadeIn 0.4s ease-out',textAlign:'center'}}>
+    {/* ストーリーシーン再生中（最前面） */}
+    {storyPlay&&<StoryPlayer storyKey={storyPlay.key} scene={storyPlay.scene} onDone={storyPlay.onComplete}/>}
     {/* オート周回サマリー（周回終了後、自動継続中はスキップ） */}
     {loopStats&&!loopStats.target&&<div style={{...CARD,marginBottom:14,background:'linear-gradient(135deg,rgba(66,165,245,0.12),rgba(102,187,106,0.08))',border:'1px solid #42a5f5',padding:14}}>
       <div style={{fontSize:13,fontWeight:900,color:'#42a5f5',marginBottom:6}}>🔄 オート周回 終了</div>
@@ -3674,8 +3805,11 @@ function QuestScreen({s,d}){
     </div>
     {phase==='fail'&&qKey&&<Btn onClick={()=>startQuest(qKey)} color='rgba(255,255,255,0.1)'>🔄 リトライ（HP全回復）</Btn>}
   </div>;
+  }
 
   return <div style={{width:'100%',padding:12,animation:'fadeIn 0.4s ease-out'}}>
+    {/* ストーリーシーン再生中（最前面） */}
+    {storyPlay&&<StoryPlayer storyKey={storyPlay.key} scene={storyPlay.scene} onDone={storyPlay.onComplete}/>}
     {/* オート周回中バナー */}
     {loopStats?.target&&<div style={{...CARD,marginBottom:8,padding:'7px 10px',background:'linear-gradient(135deg,rgba(66,165,245,0.15),rgba(102,187,106,0.10))',border:'1px solid #42a5f5',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
       <div style={{display:'flex',alignItems:'center',gap:6}}>
@@ -3836,6 +3970,17 @@ function SettingsModal({s,d,onClose}){
         </div>
         <button onClick={()=>setVal('autoNextNode',!settings.autoNextNode)} style={{...FF,padding:'6px 14px',borderRadius:20,border:'none',background:settings.autoNextNode!==false?'linear-gradient(135deg,#66bb6a,#2e7d32)':'rgba(255,255,255,0.1)',color:settings.autoNextNode!==false?'#fff':'rgba(255,255,255,0.5)',cursor:'pointer',fontSize:11,fontWeight:900}}>
           {settings.autoNextNode!==false?'ON':'OFF'}
+        </button>
+      </div>
+
+      {/* ガチャ演出スキップ */}
+      <div style={{...CARD,padding:'10px 12px',marginBottom:8,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <div>
+          <div style={{fontSize:11,fontWeight:900}}>🎰 ガチャ演出スキップ</div>
+          <div style={{fontSize:9,opacity:0.6,marginTop:2}}>カードめくり・昇格・LR演出をスキップして結果へ直行</div>
+        </div>
+        <button onClick={()=>setVal('skipGachaAnim',!settings.skipGachaAnim)} style={{...FF,padding:'6px 14px',borderRadius:20,border:'none',background:settings.skipGachaAnim?'linear-gradient(135deg,#bf40ff,#7c4dff)':'rgba(255,255,255,0.1)',color:settings.skipGachaAnim?'#fff':'rgba(255,255,255,0.5)',cursor:'pointer',fontSize:11,fontWeight:900}}>
+          {settings.skipGachaAnim?'ON':'OFF'}
         </button>
       </div>
 
@@ -4224,6 +4369,45 @@ function GemTab({s,d}){
   </div>;
 }
 
+// ─── STORY PLAYER (物語シーン再生) ────────────────────
+function StoryPlayer({storyKey,scene,onDone}){
+  // scene: {title, scenes:[{speaker,sprite,text}]}
+  const [idx,setIdx]=useState(0);
+  const cur=scene.scenes[idx];
+  const isLast=idx>=scene.scenes.length-1;
+  const next=()=>{
+    if(isLast){onDone();}else{setIdx(idx+1);}
+  };
+  return <div onClick={next} style={{position:'fixed',inset:0,zIndex:1500,background:'linear-gradient(180deg,#000 0%,#1a0533 50%,#000 100%)',display:'flex',flexDirection:'column',cursor:'pointer',animation:'fadeIn 0.5s ease-out'}}>
+    {/* タイトル（最初のシーンのみ表示） */}
+    {idx===0&&<div style={{position:'absolute',top:'10vh',left:0,right:0,textAlign:'center',pointerEvents:'none',animation:'fadeIn 1.2s ease-out'}}>
+      <div style={{fontSize:11,opacity:0.5,letterSpacing:4,marginBottom:6,color:'#bf88ff'}}>STORY</div>
+      <div style={{fontSize:24,fontWeight:900,color:'#fff',textShadow:'0 0 16px #bf88ff,0 0 32px #bf88ff'}}>{scene.title}</div>
+    </div>}
+
+    {/* モンスター立ち絵 */}
+    <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',padding:'8vh 24px 0'}}>
+      {cur.sprite&&<div style={{animation:'pop 0.4s ease-out',filter:'drop-shadow(0 0 24px rgba(191,136,255,0.6))'}}>
+        <MonsterSprite type={cur.sprite} size={180} anim="float"/>
+      </div>}
+    </div>
+
+    {/* セリフ枠 */}
+    <div style={{padding:'20px 18px 32px',background:'linear-gradient(180deg,transparent 0%,rgba(0,0,0,0.85) 30%,rgba(0,0,0,0.95) 100%)'}}>
+      <div style={{...CARD,padding:'14px 16px',background:'rgba(20,5,40,0.85)',border:'1.5px solid rgba(191,136,255,0.4)',backdropFilter:'blur(8px)',animation:'fadeIn 0.3s ease-out'}}>
+        {cur.speaker&&<div style={{fontSize:11,fontWeight:900,color:'#ff9fcf',marginBottom:6,textShadow:'0 0 6px #ff9fcf'}}>{cur.speaker}</div>}
+        <div style={{fontSize:13,lineHeight:1.7,color:cur.speaker?'#fff':'#d4c2ff',fontStyle:cur.speaker?'normal':'italic'}}>{cur.text}</div>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:10,paddingTop:8,borderTop:'1px solid rgba(255,255,255,0.08)'}}>
+          <div style={{fontSize:9,opacity:0.4}}>{idx+1} / {scene.scenes.length}</div>
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            <button onClick={(e)=>{e.stopPropagation();onDone();}} style={{...FF,padding:'4px 10px',borderRadius:8,border:'1px solid rgba(255,255,255,0.15)',background:'transparent',color:'rgba(255,255,255,0.5)',cursor:'pointer',fontSize:9,fontWeight:900}}>スキップ</button>
+            <div style={{fontSize:11,fontWeight:900,color:'#bf88ff',animation:'pulse 1.5s ease-in-out infinite'}}>{isLast?'閉じる ▶':'タップで次へ ▶'}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>;
+}
 // ─── DAILY MISSION PANEL (デイリーミッション) ─────────────
 function DailyMissionPanel({s,d}){
   const daily=s.daily||{missions:[],loginStreak:0,bonusClaimed:false};
@@ -4561,14 +4745,16 @@ function rarityGroup(rarity){
   return 'high'; // UR/LR共通
 }
 
-function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDisabled}){
+function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDisabled,skipAnim}){
   // kind: 'monster' | 'material'
+  // skipAnim: true なら最初からサマリー画面（カードめくり/昇格演出をスキップ）
+  // 100連の場合は呼び出し側で skipAnim=true を渡す想定
   // flipped[i]: 各カードが裏返り済みか
-  const [flipped,setFlipped]=useState(()=>results.map(()=>false));
+  const [flipped,setFlipped]=useState(()=>results.map(()=>!!skipAnim));
   // zoomIdx: 新規取得演出中のカードindex（null=演出なし）
   const [zoomIdx,setZoomIdx]=useState(null);
   // 全めくり終了済みか
-  const [done,setDone]=useState(false);
+  const [done,setDone]=useState(!!skipAnim);
   // 全カードめくり完了後、ユーザーのタップでリザルトに遷移するための待機状態
   const [awaitTap,setAwaitTap]=useState(false);
   // めくり速度
@@ -4859,10 +5045,22 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
       return <div style={{width:'100%',padding:14,textAlign:'center',animation:'fadeIn 0.4s ease-out'}}>
         <div style={{fontSize:22,fontWeight:900,background:'linear-gradient(90deg,#bf88ff,#ff6b9d)',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent',marginBottom:6}}>✨ 結果 ✨</div>
         <div style={{fontSize:11,opacity:0.65,marginBottom:14}}>{results.length}連の戦果</div>
+        {/* 100連以上の場合はレア集計を表示（個別表示は数が多すぎるため） */}
+        {results.length>=100&&<div style={{...CARD,padding:'12px 10px',marginBottom:10}}>
+          <div style={{fontSize:10,opacity:0.6,marginBottom:8,fontWeight:700}}>📊 レア度別</div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:6}}>
+            {['LR','UR','SR','R','C'].map(r=>(
+              <div key={r} style={{background:`${RC[r]}15`,border:`1px solid ${RC[r]}55`,borderRadius:8,padding:'7px 0',fontSize:10,fontWeight:900,color:RC[r]}}>
+                {r}<br/><span style={{fontSize:14}}>×{summary[r]||0}</span>
+              </div>
+            ))}
+          </div>
+          {newCount>0&&<div style={{textAlign:'center',marginTop:8,paddingTop:8,borderTop:'1px solid rgba(255,255,255,0.06)',fontSize:11,color:'#ff6b9d',fontWeight:900}}>✨ 新規モンスター ×{newCount}</div>}
+        </div>}
         {/* 引いたモンスター一覧 */}
         <div style={{...CARD,padding:'12px 10px',marginBottom:10}}>
           <div style={{fontSize:10,opacity:0.6,marginBottom:8,fontWeight:700}}>📋 排出モンスター</div>
-          <div style={{display:'grid',gridTemplateColumns:results.length>=5?'repeat(5,1fr)':`repeat(${results.length},1fr)`,gap:6}}>
+          <div style={{display:'grid',gridTemplateColumns:results.length>=5?'repeat(5,1fr)':`repeat(${results.length},1fr)`,gap:6,maxHeight:results.length>=100?'50vh':'auto',overflow:results.length>=100?'auto':'visible'}}>
             {results.map((r,i)=>{
               const mc=RC[r.rarity]||'#fff';
               const mi=MONS[r.type];
@@ -4975,13 +5173,16 @@ function GachaScreen({s,d}){
   if(gr){
     const n=gr.results.length;
     const fromDiamond=!!gr.fromDiamond;
-    const cost=fromDiamond?(n===10?450:50):(n===10?900:100);
+    const cost=fromDiamond?(n===100?4500:n===10?450:50):(n===100?9000:n===10?900:100);
     const canAfford=fromDiamond?(s.diamonds||0)>=cost:s.coins>=cost;
     const nextType=fromDiamond?'DIAMOND_GACHA':'GACHA';
+    // 演出スキップ: 設定ON または 100連時は強制スキップ
+    const skipAnim=!!s.settings?.skipGachaAnim||n>=100;
     return <GachaReveal kind='monster' results={gr.results}
+      skipAnim={skipAnim}
       onDone={()=>d({type:'GACHA_DONE'})}
       onPullAgain={canAfford?()=>{d({type:'GACHA_DONE'});setTimeout(()=>d({type:nextType,n}),60);}:null}
-      pullAgainLabel={`🎲 もう1回 (${fromDiamond?(n===10?'10連 💎450':'1回 💎50'):(n===10?'10連 900G':'1回 100G')})`}
+      pullAgainLabel={`🎲 もう1回 (${fromDiamond?(n===100?'100連 💎4500':n===10?'10連 💎450':'1回 💎50'):(n===100?'100連 9000G':n===10?'10連 900G':'1回 100G')})`}
       pullAgainDisabled={!canAfford}
     />;
   }
@@ -4994,6 +5195,7 @@ function GachaScreen({s,d}){
     const cost=n===10?Math.floor(2700*(1-matDisc)):Math.floor(300*(1-matDisc));
     const canAfford=s.coins>=cost;
     return <GachaReveal kind='material' results={mgr.results}
+      skipAnim={!!s.settings?.skipGachaAnim}
       onDone={()=>d({type:'MAT_GACHA_DONE'})}
       onPullAgain={canAfford?()=>{d({type:'MAT_GACHA_DONE'});setTimeout(()=>d({type:'MATERIAL_GACHA',n}),60);}:null}
       pullAgainLabel={`🎲 もう1回 (${n===10?'10連 '+cost+'G':'1回 '+cost+'G'})`}
@@ -5031,9 +5233,10 @@ function GachaScreen({s,d}){
           <div style={{fontWeight:900,color:'#ffd700',fontSize:14}}>💰 {s.coins}</div>
         </div>
         <div style={{fontSize:72,animation:spin?'pulse 0.3s ease-in-out infinite':'float 2s ease-in-out infinite',marginBottom:8}}>{spin?'🌀':'🎱'}</div>
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginTop:14}}>
-          <Btn onClick={()=>pull(1)} color='linear-gradient(135deg,#bf88ff,#7c3aed)' disabled={spin||s.coins<100}>1回 💰100</Btn>
-          <Btn onClick={()=>pull(10)} color='linear-gradient(135deg,#ffd700,#ff9800)' text='#1a0533' disabled={spin||s.coins<900}>10連 💰900</Btn>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6,marginTop:14}}>
+          <Btn onClick={()=>pull(1)} color='linear-gradient(135deg,#bf88ff,#7c3aed)' disabled={spin||s.coins<100}>1回<br/><span style={{fontSize:10}}>💰100</span></Btn>
+          <Btn onClick={()=>pull(10)} color='linear-gradient(135deg,#ffd700,#ff9800)' text='#1a0533' disabled={spin||s.coins<900}>10連<br/><span style={{fontSize:10}}>💰900</span></Btn>
+          <Btn onClick={()=>pull(100)} color='linear-gradient(135deg,#ff6b9d,#bf40ff)' disabled={spin||s.coins<9000}>100連<br/><span style={{fontSize:10}}>💰9000</span></Btn>
         </div>
       </div>
       <div style={{...CARD,marginBottom:12}}>
@@ -5090,9 +5293,10 @@ function GachaScreen({s,d}){
         </div>
         <div style={{fontSize:72,animation:spin?'pulse 0.3s ease-in-out infinite':'float 2s ease-in-out infinite',marginBottom:8,filter:'drop-shadow(0 0 12px #00e5ff)'}}>{spin?'🌀':'💠'}</div>
         <div style={{fontSize:10,opacity:0.85,marginBottom:10,color:'#80deea'}}>SR以上 約2倍 / 10連でSR+1体確定</div>
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
-          <Btn onClick={()=>pullDiamond(1)} color='linear-gradient(135deg,#00e5ff,#7c4dff)' disabled={spin||(s.diamonds||0)<50}>1回 💎50</Btn>
-          <Btn onClick={()=>pullDiamond(10)} color='linear-gradient(135deg,#ff9fcf,#bf88ff)' disabled={spin||(s.diamonds||0)<450}>10連 💎450</Btn>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6}}>
+          <Btn onClick={()=>pullDiamond(1)} color='linear-gradient(135deg,#00e5ff,#7c4dff)' disabled={spin||(s.diamonds||0)<50}>1回<br/><span style={{fontSize:10}}>💎50</span></Btn>
+          <Btn onClick={()=>pullDiamond(10)} color='linear-gradient(135deg,#ff9fcf,#bf88ff)' disabled={spin||(s.diamonds||0)<450}>10連<br/><span style={{fontSize:10}}>💎450</span></Btn>
+          <Btn onClick={()=>pullDiamond(100)} color='linear-gradient(135deg,#ff6b9d,#bf40ff)' disabled={spin||(s.diamonds||0)<4500}>100連<br/><span style={{fontSize:10}}>💎4500</span></Btn>
         </div>
       </div>
       {/* ダイヤガチャ排出確率 */}
