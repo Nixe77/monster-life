@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v2.1.4"; // モンスタータブ重さ改善(MonsterSprite/EquippedMonsterをmemo化+sortedMonstersをuseMemo化)
+const APP_VERSION = "v2.1.5"; // フェーズ2完成: デイリーミッション+連続ログインボーナス+ダイヤガチャ(SR+2倍/10連SR確定/天井30-60-200)
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -416,6 +416,16 @@ const GACHA_PITY={
   UR:100, // 100連でUR以上確定
   LR:300, // 300連でLR確定
 };
+// ダイヤガチャ天井（コインガチャより短く）
+const DIAMOND_PITY={
+  SR:30,
+  UR:60,
+  LR:200,
+};
+// ダイヤガチャ用 重み付きプール（SR以上の確率を底上げ）
+// 通常POOLよりSR+ の出現確率が約2倍
+const RW_DIAMOND={C:6,R:5,SR:4,UR:2,LR:1};
+const POOL_DIAMOND=Object.entries(MONS).filter(([k])=>!FUSION_MONS[k]).flatMap(([k,m])=>Array(RW_DIAMOND[m.rarity]||1).fill(k));
 
 // 装備：ドロップ専用（購入不可）。レア度別ドロップ確率: C=8% R=4% SR=1.5% UR=0.5% LR=0.1%（ボス×3）
 const EQUIP_IMG_B64={
@@ -915,6 +925,8 @@ const DEFAULT_STATE={coins:400,diamonds:0,monsters:[{...mkMon('mofurun',1),name:
   giftBox:[], // プレゼントボックス（期限付き報酬リスト）
   giftReleaseV1:true, // プレゼントBOXリリース記念配布完了フラグ - 新規プレイヤーは配布済み扱い
   gachaPity:{sinceSR:0,sinceUR:0,sinceLR:0}, // ガチャ天井カウンタ（コインガチャ）
+  diamondPity:{sinceSR:0,sinceUR:0,sinceLR:0}, // ダイヤガチャ天井カウンタ
+  daily:{date:null,loginStreak:0,lastLogin:null,missions:[],bonusClaimed:false}, // デイリーミッション+ログインボーナス
   shop:{listings:[],pendingGold:0},facilities:{},
   settings:{battleSpeed:1, animations:true, autoNextNode:true, confirmSell:true, hardMode:false}, // 戦闘速度・アニメON/OFF等
   screen:'home',toast:null};
@@ -1145,6 +1157,19 @@ function migrateSave(p){
       sinceUR:typeof p.gachaPity?.sinceUR==='number'?p.gachaPity.sinceUR:0,
       sinceLR:typeof p.gachaPity?.sinceLR==='number'?p.gachaPity.sinceLR:0,
     },
+    diamondPity:{
+      sinceSR:typeof p.diamondPity?.sinceSR==='number'?p.diamondPity.sinceSR:0,
+      sinceUR:typeof p.diamondPity?.sinceUR==='number'?p.diamondPity.sinceUR:0,
+      sinceLR:typeof p.diamondPity?.sinceLR==='number'?p.diamondPity.sinceLR:0,
+    },
+    // デイリーミッション（旧セーブには存在しない → 空で初期化、初回ログイン時に自動生成）
+    daily:{
+      date:p.daily?.date||null,
+      loginStreak:typeof p.daily?.loginStreak==='number'?p.daily.loginStreak:0,
+      lastLogin:p.daily?.lastLogin||null,
+      missions:Array.isArray(p.daily?.missions)?p.daily.missions.filter(m=>m&&m.id&&m.type):[],
+      bonusClaimed:!!p.daily?.bonusClaimed,
+    },
     shop:{listings,pendingGold:p.shop?.pendingGold||0,autoList:!!p.shop?.autoList},
     facilities:p.facilities||{},
     playerLv:p.playerLv||1,
@@ -1282,6 +1307,75 @@ function dexProgress(s,kind){
   const known=(s.dex?.[kind]||[]).length;
   return{known,total,pct:total?known/total*100:0};
 }
+// ─── デイリーミッション ───────────────────────────────
+// ミッションテンプレート（毎日この中から3個ランダム選択）
+const MISSION_TEMPLATES=[
+  {type:'gacha_pull',goal:1, desc:'ガチャを1回引く',reward:[{type:'coin',amount:300,desc:'コイン×300'}]},
+  {type:'gacha_pull',goal:10,desc:'ガチャを10回引く',reward:[{type:'diamond',amount:5,desc:'ダイヤ×5'}]},
+  {type:'quest_clear',goal:3, desc:'クエストを3回クリア',reward:[{type:'coin',amount:500,desc:'コイン×500'}]},
+  {type:'quest_clear',goal:5, desc:'クエストを5回クリア',reward:[{type:'key',amount:2,desc:'修行の鍵×2'}]},
+  {type:'enemy_defeat',goal:10,desc:'敵を10体倒す',reward:[{type:'coin',amount:300,desc:'コイン×300'}]},
+  {type:'enemy_defeat',goal:30,desc:'敵を30体倒す',reward:[{type:'diamond',amount:5,desc:'ダイヤ×5'}]},
+  {type:'gem_fuse',goal:3, desc:'宝石を3回合成',reward:[{type:'diamond',amount:5,desc:'ダイヤ×5'}]},
+  {type:'equip_fuse',goal:1, desc:'装備を1回合成',reward:[{type:'coin',amount:300,desc:'コイン×300'}]},
+  {type:'feed',goal:5, desc:'モンスターに餌を5回与える',reward:[{type:'coin',amount:300,desc:'コイン×300'}]},
+  {type:'train',goal:3, desc:'訓練場を3回利用',reward:[{type:'coin',amount:400,desc:'コイン×400'}]},
+  {type:'hard_clear',goal:1, desc:'ハードモードを1回クリア',reward:[{type:'diamond',amount:10,desc:'ダイヤ×10'}]},
+];
+// 全達成ボーナス（3個全達成で追加報酬）
+const MISSION_ALL_CLEAR_BONUS=[{type:'diamond',amount:10,desc:'ダイヤ×10'}];
+// 連続ログインボーナステーブル（プレゼントボックスへ自動配布、最大30日まで循環）
+const LOGIN_BONUS_TABLE={
+  1: [{type:'coin',amount:200,desc:'コイン×200'}],
+  2: [{type:'coin',amount:300,desc:'コイン×300'}],
+  3: [{type:'diamond',amount:10,desc:'ダイヤ×10'}],
+  5: [{type:'key',amount:3,desc:'修行の鍵×3'}],
+  7: [{type:'diamond',amount:20,desc:'ダイヤ×20'},{type:'material',amount:1,payload:{key:'skill_stone'},desc:'スキル石×1'}],
+  10:[{type:'diamond',amount:30,desc:'ダイヤ×30'}],
+  14:[{type:'diamond',amount:50,desc:'ダイヤ×50'},{type:'material',amount:2,payload:{key:'awaken_soul'},desc:'覚醒の魂×2'}],
+  20:[{type:'diamond',amount:70,desc:'ダイヤ×70'}],
+  30:[{type:'diamond',amount:100,desc:'ダイヤ×100'},{type:'material',amount:3,payload:{key:'awaken_soul'},desc:'覚醒の魂×3'},{type:'gem',payload:{color:'red',star:5},desc:'紅玉★5'}],
+};
+function dateKey(d){
+  // YYYY-MM-DD 形式
+  const t=d||new Date();
+  return `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,'0')}-${String(t.getDate()).padStart(2,'0')}`;
+}
+function daysBetween(a,b){
+  // 日付文字列の差（日数）
+  const da=new Date(a+'T00:00:00'),db=new Date(b+'T00:00:00');
+  return Math.round((db-da)/86400000);
+}
+function generateDailyMissions(){
+  // 3個ランダム選択（同タイプ重複は避ける）
+  const used=new Set();
+  const out=[];
+  const shuffled=[...MISSION_TEMPLATES].sort(()=>Math.random()-0.5);
+  for(const t of shuffled){
+    if(used.has(t.type))continue;
+    used.add(t.type);
+    out.push({
+      id:'m_'+Date.now().toString(36)+Math.random().toString(36).slice(2,5)+out.length,
+      type:t.type,goal:t.goal,progress:0,claimed:false,
+      reward:t.reward,desc:t.desc,
+    });
+    if(out.length>=3)break;
+  }
+  return out;
+}
+// state の daily.missions に進捗を加算した state を返す（reducer内部用）
+function bumpMission(s,missionType,amount){
+  const d0=s.daily;if(!d0||!d0.missions||d0.missions.length===0)return s;
+  let changed=false;
+  const missions=d0.missions.map(m=>{
+    if(m.type!==missionType||m.claimed)return m;
+    const next=Math.min(m.goal,(m.progress||0)+(amount||1));
+    if(next!==m.progress){changed=true;return{...m,progress:next};}
+    return m;
+  });
+  if(!changed)return s;
+  return{...s,daily:{...d0,missions}};
+}
 function facLvCost(facKey, curLv){
   // 建設: base / Lv上げ: base * (curLv+1)^1.6
   const f=FACILITIES[facKey]; if(!f) return 99999;
@@ -1402,7 +1496,10 @@ function reducer(s,a){
         enemyDefeats:baseDefeats,
       };
       const finalToast=dexDiamondGain>0?`${toast} 📖+${newEnemyDex.length}`:toast;
-      const base={...s,materials:mat,monsters:mons,coins:s.coins+goldGain,keys:(s.keys||0)+keyGain,equipInventory:[...s.equipInventory,...eqDrops],clearedQuests:cleared,shop:{...s.shop,listings:newListings},dex,toast:finalToast};
+      let base={...s,materials:mat,monsters:mons,coins:s.coins+goldGain,keys:(s.keys||0)+keyGain,equipInventory:[...s.equipInventory,...eqDrops],clearedQuests:cleared,shop:{...s.shop,listings:newListings},dex,toast:finalToast};
+      base=bumpMission(base,'quest_clear',1);
+      base=bumpMission(base,'enemy_defeat',defeatedEnemies.length);
+      if(isHard)base=bumpMission(base,'hard_clear',1);
       return addPlayerXP(base,pxp);
     }
     case 'SHOP_SET_LISTING':{
@@ -1481,7 +1578,7 @@ function reducer(s,a){
         return changed?{...m,equip:ne}:m;
       });
       const rarUp=newRar!==curRar?` ${curRar}→${newRar}！`:'';
-      return{...s,equipInventory:newInv,monsters:newMonsters,toast:`${defEq.name} +${newLb} Lv${newLv}${rarUp}`};
+      return bumpMission({...s,equipInventory:newInv,monsters:newMonsters,toast:`${defEq.name} +${newLb} Lv${newLv}${rarUp}`},'equip_fuse',1);
     }
     case 'FUSE_EQUIP_BATCH':{
       // 一括合成: a.baseId に対して a.matIds（複数）を順番に合成
@@ -1526,7 +1623,7 @@ function reducer(s,a){
         return changed?{...m,equip:ne}:m;
       });
       const rarMsg=rarChanges.length>0?` (${rarChanges.join(',')})`:'';
-      return{...s,equipInventory:newInv,monsters:newMonsters,toast:`✨ ${defEq.name} +${curBase.lb} Lv${curBase.lv} (${fuseCount}個合成)${rarMsg}`};
+      return bumpMission({...s,equipInventory:newInv,monsters:newMonsters,toast:`✨ ${defEq.name} +${curBase.lb} Lv${curBase.lv} (${fuseCount}個合成)${rarMsg}`},'equip_fuse',fuseCount);
     }
     case 'AWAKEN':{
       // 覚醒: lb=5かつ覚醒<5の時に たましいのかけら×N消費 + ゴールド消費で覚醒+1
@@ -1629,7 +1726,7 @@ function reducer(s,a){
       const p=presets[amount]||presets.small;
       if(s.coins<p.gold)return{...s,toast:`${p.gold}🪙必要`};
       const mons=s.monsters.map(mm=>mm.id===mId?addXP(mm,p.xp):mm);
-      return{...s,coins:s.coins-p.gold,monsters:mons,toast:`🏋 ${m.name} +${p.xp}XP！`};
+      return bumpMission({...s,coins:s.coins-p.gold,monsters:mons,toast:`🏋 ${m.name} +${p.xp}XP！`},'train',1);
     }
     case 'TOGGLE_AUTO_LIST':{
       // 自動出品ON/OFF切替（雑貨商Lv2以上で利用可）
@@ -1678,7 +1775,7 @@ function reducer(s,a){
       const newGem={id:'g_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),color:newColor,star:newStar};
       const remaining=gems.filter(g=>g.id!==gA.id&&g.id!==gB.id);
       remaining.push(newGem);
-      return{...s,gems:remaining,toast:success?`✨ 合成成功! ★${newStar}`:`💧 失敗… ★${newStar}`,lastFuseResult:{success,newGem}};
+      return bumpMission({...s,gems:remaining,toast:success?`✨ 合成成功! ★${newStar}`:`💧 失敗… ★${newStar}`,lastFuseResult:{success,newGem}},'gem_fuse',1);
     }
     case 'FUSE_GEMS_AUTO':{
       // 自動連続合成: 指定された宝石プールから同星ペアを順次合成（宝石工房Lv3以上）
@@ -1795,15 +1892,155 @@ function reducer(s,a){
         enemies:s.dex?.enemies||[],
         pendingDiamonds:(s.dex?.pendingDiamonds||0)+diamondGain,
       };
-      return{...s,coins:s.coins-cost,monsters:mons,dex,gachaPity:pity,gacha:{results,idx:0}};
+      const base={...s,coins:s.coins-cost,monsters:mons,dex,gachaPity:pity,gacha:{results,idx:0}};
+      return bumpMission(base,'gacha_pull',a.n);
     }
     case 'GACHA_NEXT':{if(!s.gacha)return s;const ni=s.gacha.idx+1;if(ni>=s.gacha.results.length)return{...s,gacha:null};return{...s,gacha:{...s.gacha,idx:ni}};}
     case 'GACHA_DONE':return{...s,gacha:null};
+    case 'DIAMOND_GACHA':{
+      // ダイヤガチャ: 単発50💎 / 10連450💎
+      const cost=a.n===10?450:50;
+      if((s.diamonds||0)<cost)return{...s,toast:'ダイヤが足りない！'};
+      const poolByRarity=POOL_BY_RARITY;
+      let pity={...(s.diamondPity||{sinceSR:0,sinceUR:0,sinceLR:0})};
+      const pulled=[];
+      const guaranteedFlags=[];
+      // 10連の場合は最後の1個でSR+確定（既に天井条件が満たされてれば天井優先）
+      const guaranteeAtIndex=a.n===10?9:-1;
+      let srHitInPull=false;
+      for(let i=0;i<a.n;i++){
+        pity.sinceSR++;pity.sinceUR++;pity.sinceLR++;
+        let type,guaranteed=null;
+        if(pity.sinceLR>=DIAMOND_PITY.LR){
+          const pool=poolByRarity.LR;type=pool[Math.floor(Math.random()*pool.length)]||POOL_DIAMOND[0];guaranteed='LR';
+        }else if(pity.sinceUR>=DIAMOND_PITY.UR){
+          const pool=[...poolByRarity.UR,...poolByRarity.LR];type=pool[Math.floor(Math.random()*pool.length)]||POOL_DIAMOND[0];guaranteed='UR';
+        }else if(pity.sinceSR>=DIAMOND_PITY.SR){
+          const pool=[...poolByRarity.SR,...poolByRarity.UR,...poolByRarity.LR];type=pool[Math.floor(Math.random()*pool.length)]||POOL_DIAMOND[0];guaranteed='SR';
+        }else if(i===guaranteeAtIndex&&!srHitInPull){
+          // 10連の最後で、まだSR+が1体も出ていなければSR以上確定
+          const pool=[...poolByRarity.SR,...poolByRarity.UR,...poolByRarity.LR];type=pool[Math.floor(Math.random()*pool.length)]||POOL_DIAMOND[0];guaranteed='SR10';
+        }else{
+          type=POOL_DIAMOND[Math.floor(Math.random()*POOL_DIAMOND.length)];
+        }
+        pulled.push(type);guaranteedFlags.push(guaranteed);
+        const r=MONS[type].rarity;
+        if(['SR','UR','LR'].includes(r))srHitInPull=true;
+        // カウンタリセットは天井確定排出時のみ
+        if(guaranteed==='LR'){pity.sinceLR=0;pity.sinceUR=0;pity.sinceSR=0;}
+        else if(guaranteed==='UR'){pity.sinceUR=0;pity.sinceSR=0;}
+        else if(guaranteed==='SR'){pity.sinceSR=0;}
+      }
+      // 共通処理（コインガチャと同じ）
+      let mons=[...s.monsters];const results=[];
+      const ownedTypesBefore=new Set(s.monsters.map(m=>m.type));
+      const dexSet=new Set(s.dex?.monsters||[]);
+      const newDexTypes=[];
+      pulled.forEach((type,i)=>{
+        const isNewType=!dexSet.has(type);
+        if(isNewType){dexSet.add(type);newDexTypes.push(type);}
+        const pureRarity=MONS[type].rarity;
+        const dup=mons.find(m=>m.type===type&&m.lb<5);
+        if(dup){
+          const nlb=Math.min(5,dup.lb+1);
+          const nr=(nlb===3||nlb===5)&&RO.indexOf(dup.rarity)<4?RO[RO.indexOf(dup.rarity)+1]:dup.rarity;
+          mons=mons.map(m=>m.id===dup.id?{...m,lb:nlb,rarity:nr}:m);
+          results.push({type,isLB:true,rarity:pureRarity,lb:nlb,isNew:false,guaranteed:guaranteedFlags[i]});
+        }else{
+          const nm={...mkMon(type,Date.now()+Math.random()*9999)};
+          mons.push(nm);
+          ownedTypesBefore.add(type);
+          results.push({type,isLB:false,rarity:pureRarity,lb:0,isNew:isNewType,guaranteed:guaranteedFlags[i]});
+        }
+      });
+      const dexDiamondGain=newDexTypes.length*5;
+      const dex={
+        monsters:[...(s.dex?.monsters||[]),...newDexTypes],
+        enemies:s.dex?.enemies||[],
+        pendingDiamonds:(s.dex?.pendingDiamonds||0)+dexDiamondGain,
+      };
+      const base={...s,diamonds:(s.diamonds||0)-cost,monsters:mons,dex,diamondPity:pity,gacha:{results,idx:0,fromDiamond:true}};
+      return bumpMission(base,'gacha_pull',a.n);
+    }
     case 'CLAIM_DEX_DIAMONDS':{
       // 図鑑画面で未受取ダイヤを受け取る
       const pending=s.dex?.pendingDiamonds||0;
       if(pending<=0)return{...s,toast:'受け取れるダイヤがありません'};
       return{...s,diamonds:(s.diamonds||0)+pending,dex:{...s.dex,pendingDiamonds:0},toast:`💎+${pending} 受け取った！`};
+    }
+    case 'DAILY_CHECK':{
+      // ゲーム起動時/日付変更時に呼ぶ: ミッション生成 + ログインボーナス配布
+      const today=dateKey();
+      const d0=s.daily||{date:null,loginStreak:0,lastLogin:null,missions:[],bonusClaimed:false};
+      if(d0.date===today)return s; // 今日は処理済み
+      // ログインストリーク計算
+      let newStreak=1;
+      if(d0.lastLogin){
+        const diff=daysBetween(d0.lastLogin,today);
+        if(diff===1)newStreak=(d0.loginStreak||0)+1;
+        else if(diff===0)newStreak=d0.loginStreak||1; // 同日なら維持
+        else newStreak=1; // 中断
+      }
+      // 30日でループ
+      const bonusDay=((newStreak-1)%30)+1;
+      // ログインボーナス: テーブルにある日付のみ配布
+      const bonusRewards=LOGIN_BONUS_TABLE[bonusDay];
+      const newGifts=[];
+      if(bonusRewards&&d0.lastLogin!==today){
+        bonusRewards.forEach((r,i)=>{
+          newGifts.push({
+            id:'gift_login'+today+'_'+i,
+            type:r.type,amount:r.amount||1,payload:r.payload||null,
+            title:`連続ログイン ${newStreak}日目`,
+            desc:r.desc||'',
+            from:'デイリー',
+            createdAt:Date.now(),
+            expiresAt:Date.now()+7*86400000,
+          });
+        });
+      }
+      // 新しいミッション3つ生成
+      const missions=generateDailyMissions();
+      const daily={date:today,loginStreak:newStreak,lastLogin:today,missions,bonusClaimed:false};
+      const giftBox=newGifts.length>0?[...newGifts,...(s.giftBox||[])]:(s.giftBox||[]);
+      const toast=newGifts.length>0?`📅 ${newStreak}日目のログインボーナスを受け取った！`:`📅 新しいデイリーミッションが届いた！`;
+      return{...s,daily,giftBox,toast};
+    }
+    case 'ADD_MISSION_PROGRESS':{
+      // 内部: ミッション進捗を加算（{type, amount}）
+      const d0=s.daily;if(!d0||!d0.missions||d0.missions.length===0)return s;
+      let changed=false;
+      const missions=d0.missions.map(m=>{
+        if(m.type!==a.missionType||m.claimed)return m;
+        const next=Math.min(m.goal,(m.progress||0)+(a.amount||1));
+        if(next!==m.progress){changed=true;return{...m,progress:next};}
+        return m;
+      });
+      if(!changed)return s;
+      return{...s,daily:{...d0,missions}};
+    }
+    case 'CLAIM_MISSION':{
+      // ミッション報酬受取
+      const d0=s.daily;if(!d0||!d0.missions)return s;
+      const m=d0.missions.find(mm=>mm.id===a.id);
+      if(!m||m.claimed)return{...s,toast:'受け取り済みまたは未達成です'};
+      if((m.progress||0)<m.goal)return{...s,toast:`達成していません (${m.progress}/${m.goal})`};
+      let ns=s;
+      (m.reward||[]).forEach(r=>{ns=applyGiftReward(ns,r);});
+      const missions=d0.missions.map(mm=>mm.id===m.id?{...mm,claimed:true}:mm);
+      const descs=m.reward.map(r=>r.desc).join('・');
+      return{...ns,daily:{...d0,missions},toast:`🎯 報酬: ${descs}`};
+    }
+    case 'CLAIM_MISSION_BONUS':{
+      // 全達成ボーナス受取
+      const d0=s.daily;if(!d0||!d0.missions||d0.missions.length===0)return s;
+      const allDone=d0.missions.every(m=>m.claimed);
+      if(!allDone)return{...s,toast:'全ミッション達成・受取後に獲得できます'};
+      if(d0.bonusClaimed)return{...s,toast:'すでに受け取り済みです'};
+      let ns=s;
+      MISSION_ALL_CLEAR_BONUS.forEach(r=>{ns=applyGiftReward(ns,r);});
+      const descs=MISSION_ALL_CLEAR_BONUS.map(r=>r.desc).join('・');
+      return{...ns,daily:{...d0,bonusClaimed:true},toast:`🏆 全達成ボーナス: ${descs}`};
     }
     case 'CLAIM_DEX_COMP_REWARD':{
       // 図鑑コンプ報酬: kind('monsters'|'enemies'), threshold(10/30/50/100)
@@ -1961,7 +2198,7 @@ function reducer(s,a){
       const updated={...main,level:lv,xp};
       // 素材削除＋メイン更新
       const mons=s.monsters.filter(m=>!matSet.has(m.id)).map(m=>m.id===mainId?updated:m);
-      return{...s,monsters:mons,toast:lvUps>0?`✨ +${totalXp}XP / Lv${main.level}→${lv}！`:`✨ +${totalXp}XP獲得！`};
+      return bumpMission({...s,monsters:mons,toast:lvUps>0?`✨ +${totalXp}XP / Lv${main.level}→${lv}！`:`✨ +${totalXp}XP獲得！`},'feed',mats.length);
     }
     case 'BULK_LIMIT_BREAK':{
       const {rarity}=a; // 開始時の対象レア度（'C' or 'R'）
@@ -3987,6 +4224,87 @@ function GemTab({s,d}){
   </div>;
 }
 
+// ─── DAILY MISSION PANEL (デイリーミッション) ─────────────
+function DailyMissionPanel({s,d}){
+  const daily=s.daily||{missions:[],loginStreak:0,bonusClaimed:false};
+  const missions=daily.missions||[];
+  const allClaimed=missions.length>0&&missions.every(m=>m.claimed);
+  const allDone=missions.length>0&&missions.every(m=>(m.progress||0)>=m.goal);
+  const bonusClaimable=allClaimed&&!daily.bonusClaimed;
+  // 次のリセットまで（朝0時基準）
+  function fmtNextReset(){
+    const now=new Date();
+    const next=new Date(now.getFullYear(),now.getMonth(),now.getDate()+1,0,0,0,0);
+    const ms=next-now;
+    const h=Math.floor(ms/3600000);
+    const m=Math.floor((ms%3600000)/60000);
+    return `${h}時間${m}分`;
+  }
+  // ログインボーナス: 現在のストリーク日に該当するボーナス
+  const streak=daily.loginStreak||0;
+  const cycleDay=streak>0?((streak-1)%30)+1:0;
+
+  return <div>
+    <div style={{...CARD,marginBottom:10,padding:'12px 14px',background:'linear-gradient(135deg,rgba(255,193,7,0.10),rgba(255,107,157,0.08))',border:'1px solid rgba(255,193,7,0.3)'}}>
+      <div style={{fontSize:11,fontWeight:900,color:'#ffd54f',marginBottom:4}}>📅 デイリーミッション</div>
+      <div style={{fontSize:10,opacity:0.8,lineHeight:1.5}}>
+        毎日3つのミッションが届きます。次のリセット: <b style={{color:'#ffd54f'}}>{fmtNextReset()}</b>
+      </div>
+    </div>
+
+    {/* ログインボーナス情報 */}
+    <div style={{...CARD,marginBottom:10,padding:'10px 12px',background:'linear-gradient(135deg,rgba(102,187,106,0.08),rgba(66,165,245,0.06))',border:'1px solid rgba(102,187,106,0.3)'}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:5}}>
+        <div style={{fontSize:11,fontWeight:900,color:'#66bb6a'}}>🎁 連続ログインボーナス</div>
+        <div style={{fontSize:11,fontWeight:900,color:'#ffd700'}}>{streak}日目</div>
+      </div>
+      <div style={{fontSize:9,opacity:0.75,marginBottom:8}}>ログインボーナスはプレゼントBOXに自動配布されます（7日期限）。30日で1サイクル。</div>
+      {/* 30日サイクルのドット表示 */}
+      <div style={{display:'grid',gridTemplateColumns:'repeat(10,1fr)',gap:2}}>
+        {[...Array(30)].map((_,i)=>{const day=i+1;const isCurrent=day===cycleDay;const passed=day<cycleDay;const hasBonus=!!LOGIN_BONUS_TABLE[day];
+        return <div key={i} style={{aspectRatio:'1',borderRadius:4,background:isCurrent?'linear-gradient(135deg,#ffd700,#ff9800)':passed?'rgba(102,187,106,0.4)':hasBonus?'rgba(255,215,0,0.15)':'rgba(255,255,255,0.05)',border:`1px solid ${isCurrent?'#ffd700':hasBonus?'rgba(255,215,0,0.3)':'rgba(255,255,255,0.08)'}`,fontSize:7,fontWeight:900,color:isCurrent?'#1a0a00':passed?'#fff':hasBonus?'#ffd700':'rgba(255,255,255,0.3)',display:'flex',alignItems:'center',justifyContent:'center'}}>{day}</div>;})}
+      </div>
+    </div>
+
+    {/* ミッション一覧 */}
+    <div style={{fontSize:11,fontWeight:900,opacity:0.7,marginBottom:6}}>🎯 今日のミッション ({missions.filter(m=>m.claimed).length}/{missions.length})</div>
+    {missions.length===0?<div style={{...CARD,padding:'30px 14px',textAlign:'center',opacity:0.5,fontSize:11}}>
+      <div style={{fontSize:36,marginBottom:6}}>📅</div>
+      ミッションがまだありません<br/><span style={{fontSize:9}}>明日また確認してください</span>
+    </div>:<div style={{display:'flex',flexDirection:'column',gap:6}}>
+      {missions.map(m=>{
+        const done=(m.progress||0)>=m.goal;
+        const claimable=done&&!m.claimed;
+        return <div key={m.id} style={{...CARD,padding:'10px 12px',border:`1px solid ${m.claimed?'rgba(102,187,106,0.3)':claimable?'rgba(255,215,0,0.5)':'rgba(255,255,255,0.1)'}`,background:m.claimed?'rgba(102,187,106,0.05)':claimable?'rgba(255,215,0,0.08)':'rgba(255,255,255,0.03)',opacity:m.claimed?0.65:1}}>
+          <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:6}}>
+            <div style={{fontSize:18}}>{m.claimed?'✓':done?'⭐':'🎯'}</div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:11,fontWeight:900}}>{m.desc}</div>
+              <div style={{fontSize:9,opacity:0.7,marginTop:2}}>報酬: {m.reward.map(r=>r.desc).join('・')}</div>
+            </div>
+          </div>
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            <div style={{flex:1,height:6,background:'rgba(0,0,0,0.3)',borderRadius:3,overflow:'hidden'}}>
+              <div style={{width:`${Math.min(100,(m.progress||0)/m.goal*100)}%`,height:'100%',background:done?'linear-gradient(90deg,#ffd700,#ff9800)':'linear-gradient(90deg,#bf88ff,#7c4dff)',transition:'width 0.3s'}}/>
+            </div>
+            <div style={{fontSize:10,fontWeight:900,minWidth:50,textAlign:'right',color:done?'#ffd700':'rgba(255,255,255,0.65)'}}>{m.progress||0}/{m.goal}</div>
+          </div>
+          {claimable&&<button onClick={()=>d({type:'CLAIM_MISSION',id:m.id})} style={{...FF,marginTop:8,width:'100%',padding:'7px 0',borderRadius:8,border:'none',background:'linear-gradient(135deg,#ffd700,#ff9800)',color:'#1a0a00',cursor:'pointer',fontSize:11,fontWeight:900}}>受取</button>}
+          {m.claimed&&<div style={{textAlign:'center',marginTop:6,fontSize:9,color:'#66bb6a',fontWeight:900}}>✓ 受取済</div>}
+        </div>;
+      })}
+    </div>}
+
+    {/* 全達成ボーナス */}
+    {missions.length>0&&<div style={{...CARD,marginTop:10,padding:'12px 14px',background:bonusClaimable?'linear-gradient(135deg,rgba(255,215,0,0.18),rgba(255,107,157,0.12))':daily.bonusClaimed?'rgba(102,187,106,0.05)':'rgba(255,255,255,0.03)',border:`1px solid ${bonusClaimable?'rgba(255,215,0,0.5)':daily.bonusClaimed?'rgba(102,187,106,0.3)':'rgba(255,255,255,0.08)'}`}}>
+      <div style={{fontSize:11,fontWeight:900,color:bonusClaimable?'#ffd700':daily.bonusClaimed?'#66bb6a':'rgba(255,255,255,0.5)',marginBottom:4}}>🏆 全達成ボーナス</div>
+      <div style={{fontSize:10,opacity:0.8,marginBottom:8}}>すべて受け取った時の追加報酬: {MISSION_ALL_CLEAR_BONUS.map(r=>r.desc).join('・')}</div>
+      {bonusClaimable&&<button onClick={()=>d({type:'CLAIM_MISSION_BONUS'})} style={{...FF,width:'100%',padding:'8px 0',borderRadius:10,border:'none',background:'linear-gradient(135deg,#ffd700,#ff6b9d)',color:'#1a0a00',cursor:'pointer',fontSize:12,fontWeight:900}}>🏆 ボーナスを受け取る</button>}
+      {daily.bonusClaimed&&<div style={{textAlign:'center',fontSize:10,color:'#66bb6a',fontWeight:900}}>✓ 受取済</div>}
+      {!bonusClaimable&&!daily.bonusClaimed&&<div style={{textAlign:'center',fontSize:9,opacity:0.5}}>全ミッション達成・受取で解放</div>}
+    </div>}
+  </div>;
+}
 // ─── GIFT BOX (プレゼントボックス) ─────────────────────────
 function GiftBoxPanel({s,d}){
   const gifts=s.giftBox||[];
@@ -4646,8 +4964,9 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
 // ─── GACHA SCREEN ────────────────────────────────────────
 function GachaScreen({s,d}){
   const [spin,setSpin]=useState(false);
-  const [tab,setTab]=useState('monster'); // monster | material
+  const [tab,setTab]=useState('monster'); // monster | diamond | material
   function pull(n){if(spin)return;setSpin(true);setTimeout(()=>{d({type:'GACHA',n});setSpin(false)},900);}
+  function pullDiamond(n){if(spin)return;setSpin(true);setTimeout(()=>{d({type:'DIAMOND_GACHA',n});setSpin(false)},900);}
   function pullMat(n){if(spin)return;setSpin(true);setTimeout(()=>{d({type:'MATERIAL_GACHA',n});setSpin(false)},900);}
   const gr=s.gacha;
   const mgr=s.matGacha;
@@ -4655,12 +4974,14 @@ function GachaScreen({s,d}){
   // モンスターガチャ結果表示 → カードめくり演出
   if(gr){
     const n=gr.results.length;
-    const cost=n===10?900:100;
-    const canAfford=s.coins>=cost;
+    const fromDiamond=!!gr.fromDiamond;
+    const cost=fromDiamond?(n===10?450:50):(n===10?900:100);
+    const canAfford=fromDiamond?(s.diamonds||0)>=cost:s.coins>=cost;
+    const nextType=fromDiamond?'DIAMOND_GACHA':'GACHA';
     return <GachaReveal kind='monster' results={gr.results}
       onDone={()=>d({type:'GACHA_DONE'})}
-      onPullAgain={canAfford?()=>{d({type:'GACHA_DONE'});setTimeout(()=>d({type:'GACHA',n}),60);}:null}
-      pullAgainLabel={`🎲 もう1回 (${n===10?'10連 900G':'1回 100G'})`}
+      onPullAgain={canAfford?()=>{d({type:'GACHA_DONE'});setTimeout(()=>d({type:nextType,n}),60);}:null}
+      pullAgainLabel={`🎲 もう1回 (${fromDiamond?(n===10?'10連 💎450':'1回 💎50'):(n===10?'10連 900G':'1回 100G')})`}
       pullAgainDisabled={!canAfford}
     />;
   }
@@ -4697,8 +5018,8 @@ function GachaScreen({s,d}){
   return <div style={{width:'100%',padding:14,animation:'fadeIn 0.4s ease-out'}}>
     {/* タブ切替 */}
     <div style={{display:'flex',gap:4,marginBottom:12,background:'rgba(255,255,255,0.04)',borderRadius:14,padding:3}}>
-      {[['monster','🎰 モンスター'],['material','📜 素材']].map(([k,l])=>(
-        <button key={k} onClick={()=>setTab(k)} style={{...FF,flex:1,padding:'9px 0',borderRadius:11,border:'none',fontWeight:900,fontSize:11,cursor:'pointer',background:tab===k?'linear-gradient(135deg,#bf88ff,#7c3aed)':'transparent',color:tab===k?'#fff':'rgba(255,255,255,0.5)',transition:'all 0.18s'}}>{l}</button>
+      {[['monster','🎰 コイン'],['diamond','💎 ダイヤ'],['material','📜 素材']].map(([k,l])=>(
+        <button key={k} onClick={()=>setTab(k)} style={{...FF,flex:1,padding:'9px 0',borderRadius:11,border:'none',fontWeight:900,fontSize:11,cursor:'pointer',background:tab===k?(k==='diamond'?'linear-gradient(135deg,#00e5ff,#7c4dff)':'linear-gradient(135deg,#bf88ff,#7c3aed)'):'transparent',color:tab===k?'#fff':'rgba(255,255,255,0.5)',transition:'all 0.18s'}}>{l}</button>
       ))}
     </div>
 
@@ -4757,6 +5078,73 @@ function GachaScreen({s,d}){
       <div style={{...CARD,fontSize:10,opacity:0.6,lineHeight:1.7}}>
         💡 重複モンスターは自動で限界突破され、ステータスが+12%/★アップします。<br/>
         ★3 / ★5 でレア度もUP。★5同士の同種は合成タブでランクアップ可能！
+      </div>
+    </>}
+
+    {/* ダイヤガチャ */}
+    {tab==='diamond'&&<>
+      <div style={{...CARD,marginBottom:14,textAlign:'center',padding:'18px 14px',background:'linear-gradient(135deg,rgba(0,229,255,0.12),rgba(124,77,255,0.10))',border:'1px solid rgba(0,229,255,0.3)'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}}>
+          <div style={{fontWeight:900,fontSize:18,background:'linear-gradient(90deg,#00e5ff,#7c4dff)',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent'}}>💎 プレミアムガチャ</div>
+          <div style={{fontWeight:900,color:'#80deea',fontSize:14,textShadow:'0 0 6px #00e5ff'}}>💎 {s.diamonds||0}</div>
+        </div>
+        <div style={{fontSize:72,animation:spin?'pulse 0.3s ease-in-out infinite':'float 2s ease-in-out infinite',marginBottom:8,filter:'drop-shadow(0 0 12px #00e5ff)'}}>{spin?'🌀':'💠'}</div>
+        <div style={{fontSize:10,opacity:0.85,marginBottom:10,color:'#80deea'}}>SR以上 約2倍 / 10連でSR+1体確定</div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+          <Btn onClick={()=>pullDiamond(1)} color='linear-gradient(135deg,#00e5ff,#7c4dff)' disabled={spin||(s.diamonds||0)<50}>1回 💎50</Btn>
+          <Btn onClick={()=>pullDiamond(10)} color='linear-gradient(135deg,#ff9fcf,#bf88ff)' disabled={spin||(s.diamonds||0)<450}>10連 💎450</Btn>
+        </div>
+      </div>
+      {/* ダイヤガチャ排出確率 */}
+      <div style={{...CARD,marginBottom:12}}>
+        <div style={{fontSize:11,fontWeight:700,opacity:0.6,marginBottom:8}}>📊 排出確率（ダイヤガチャ）</div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:6}}>
+          {(()=>{
+            const counts={C:0,R:0,SR:0,UR:0,LR:0};
+            POOL_DIAMOND.forEach(t=>counts[MONS[t].rarity]++);
+            const total2=POOL_DIAMOND.length;
+            return ['LR','UR','SR','R','C'].map(r=>{
+              const pct=total2?(counts[r]/total2*100).toFixed(2):'0.00';
+              return <div key={r} style={{textAlign:'center',padding:'6px 0',borderRadius:10,background:'rgba(255,255,255,0.04)',border:`1px solid ${RC[r]}55`}}>
+                <div style={{fontSize:10,fontWeight:900,color:RC[r]}}>{r}</div>
+                <div style={{fontSize:11,fontWeight:700,marginTop:2}}>{pct}%</div>
+              </div>;
+            });
+          })()}
+        </div>
+      </div>
+      {/* ダイヤガチャ天井 */}
+      <div style={{...CARD,marginBottom:12,padding:'10px 12px',background:'linear-gradient(135deg,rgba(0,229,255,0.05),rgba(124,77,255,0.05))',border:'1px solid rgba(0,229,255,0.25)'}}>
+        <div style={{fontSize:11,fontWeight:900,color:'#80deea',marginBottom:6}}>🎯 天井（次の確定排出まで）</div>
+        {(()=>{
+          const pity=s.diamondPity||{sinceSR:0,sinceUR:0,sinceLR:0};
+          const tiers=[
+            ['SR',pity.sinceSR,DIAMOND_PITY.SR,RC.SR],
+            ['UR',pity.sinceUR,DIAMOND_PITY.UR,RC.UR],
+            ['LR',pity.sinceLR,DIAMOND_PITY.LR,RC.LR],
+          ];
+          return <div style={{display:'flex',flexDirection:'column',gap:5}}>
+            {tiers.map(([r,cur,max,col])=>{
+              const remain=Math.max(0,max-cur);
+              const pct=Math.min(100,(cur/max)*100);
+              return <div key={r}>
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:9,marginBottom:2}}>
+                  <span style={{color:col,fontWeight:900}}>{r}以上確定</span>
+                  <span style={{opacity:0.75}}>{remain===0?<b style={{color:col}}>次回確定！</b>:`あと${remain}回`}</span>
+                </div>
+                <div style={{height:5,background:'rgba(0,0,0,0.3)',borderRadius:3,overflow:'hidden'}}>
+                  <div style={{width:`${pct}%`,height:'100%',background:`linear-gradient(90deg,${col}88,${col})`,transition:'width 0.3s'}}/>
+                </div>
+              </div>;
+            })}
+          </div>;
+        })()}
+      </div>
+      <div style={{...CARD,fontSize:10,opacity:0.7,lineHeight:1.7}}>
+        💎 <b style={{color:'#80deea'}}>プレミアム特典</b><br/>
+        ・SR以上の出現率がコインガチャの約2倍<br/>
+        ・10連で必ずSR以上1体が出現<br/>
+        ・天井がコインガチャの半分以下（SR30/UR60/LR200）
       </div>
     </>}
 
@@ -5973,6 +6361,14 @@ function GameApp({user,userName,cloudInitial,onLogout,offline}){
   const [showSettings,setShowSettings]=useState(false); // 設定モーダル（どこからでも開ける）
   const [menuOpen,setMenuOpen]=useState(false); // ハンバーガーメニュー
 
+  // デイリーチェック: 起動時 + 日付変更検知（10分ごと）
+  useEffect(()=>{
+    const check=()=>{d({type:'DAILY_CHECK'});};
+    check();
+    const tid=setInterval(check,10*60*1000);
+    return()=>clearInterval(tid);
+  },[]);
+
   // 起動時: クラウドデータがあればそれをロード（ローカルより優先）
   useEffect(()=>{
     if(offline){setCloudInitDone(true);return;}
@@ -6089,7 +6485,7 @@ function GameApp({user,userName,cloudInitial,onLogout,offline}){
       <div style={{display:'flex',gap:6,alignItems:'center'}}>
         <button onClick={()=>setMenuOpen(true)} title="メニュー" style={{position:'relative',background:'rgba(191,136,255,0.10)',border:'1px solid rgba(191,136,255,0.35)',borderRadius:8,cursor:'pointer',fontSize:18,padding:'2px 10px',color:'#fff',lineHeight:1,...FF}}>
           ≡
-          {((s.dex?.pendingDiamonds||0)>0||(s.giftBox||[]).some(g=>!g.expiresAt||g.expiresAt>Date.now()))&&<span style={{position:'absolute',top:-2,right:-2,minWidth:8,height:8,borderRadius:5,background:'#ff9fcf',boxShadow:'0 0 6px #ff9fcf'}}/>}
+          {((s.dex?.pendingDiamonds||0)>0||(s.giftBox||[]).some(g=>!g.expiresAt||g.expiresAt>Date.now())||(s.daily?.missions||[]).some(m=>(m.progress||0)>=m.goal&&!m.claimed))&&<span style={{position:'absolute',top:-2,right:-2,minWidth:8,height:8,borderRadius:5,background:'#ff9fcf',boxShadow:'0 0 6px #ff9fcf'}}/>}
         </button>
       </div>
       <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:2}}>
@@ -6129,6 +6525,7 @@ function GameApp({user,userName,cloudInitial,onLogout,offline}){
       {s.screen==='bag'        &&<BagScreen s={s} d={d}/>}
       {s.screen==='dex'        &&<div style={{width:'100%',padding:12,paddingBottom:80,animation:'fadeIn 0.4s ease-out'}}><DexPanel s={s} d={d}/></div>}
       {s.screen==='gift'       &&<div style={{width:'100%',padding:12,paddingBottom:80,animation:'fadeIn 0.4s ease-out'}}><GiftBoxPanel s={s} d={d}/></div>}
+      {s.screen==='daily'      &&<div style={{width:'100%',padding:12,paddingBottom:80,animation:'fadeIn 0.4s ease-out'}}><DailyMissionPanel s={s} d={d}/></div>}
     </div>
     {/* 設定モーダル（どこからでも開ける） */}
     {showSettings&&<SettingsModal s={s} d={d} onClose={()=>setShowSettings(false)}/>}
@@ -6142,6 +6539,7 @@ function GameApp({user,userName,cloudInitial,onLogout,offline}){
         {(()=>{
           const items=[
             {key:'dex',icon:'📖',label:'図鑑',badge:(s.dex?.pendingDiamonds||0)>0?'💎':null,onClick:()=>{d({type:'SCREEN',v:'dex'});setMenuOpen(false);}},
+            {key:'daily',icon:'📅',label:'デイリーミッション',badge:(()=>{const m=s.daily?.missions||[];const c=m.filter(mm=>(mm.progress||0)>=mm.goal&&!mm.claimed).length;return c>0?String(c):null;})(),onClick:()=>{d({type:'SCREEN',v:'daily'});setMenuOpen(false);}},
             {key:'settings',icon:'⚙',label:'設定',onClick:()=>{setShowSettings(true);setMenuOpen(false);}},
             {key:'save',icon:'💾',label:'セーブ・ロード',sub:'パスワード保存',onClick:()=>{setShowSave(true);setMenuOpen(false);}},
             {key:'gift',icon:'🎁',label:'プレゼントボックス',badge:(s.giftBox||[]).filter(g=>!g.expiresAt||g.expiresAt>Date.now()).length>0?String((s.giftBox||[]).filter(g=>!g.expiresAt||g.expiresAt>Date.now()).length):null,onClick:()=>{d({type:'SCREEN',v:'gift'});setMenuOpen(false);}},
