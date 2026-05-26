@@ -45,7 +45,7 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 // ═══════════════════════════════════════════════════════════════
 // バージョン管理（アップデート確認用）
 // ═══════════════════════════════════════════════════════════════
-const APP_VERSION = "v2.1.2"; // パフォーマンス最適化(startQuestのO(N²)解消+QUESTS事前グループ化+POOLグローバル化)
+const APP_VERSION = "v2.1.3"; // ガチャ結果のレア集計+限界突破集計カード削除
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE 設定（要置換）
@@ -4543,19 +4543,6 @@ function GachaReveal({kind,results,onDone,onPullAgain,pullAgainLabel,pullAgainDi
                 <div style={{fontSize:7,opacity:0.75,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:'100%'}}>{mi?.name}</div>
               </div>;
             })}
-          </div>
-        </div>
-        <div style={{...CARD,padding:'14px 14px',marginBottom:10}}>
-          <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:6,marginBottom:10}}>
-            {RO.map(rar=>(
-              <div key={rar} style={{background:`${RC[rar]}18`,border:`1px solid ${RC[rar]}66`,borderRadius:8,padding:'7px 0',fontSize:10,fontWeight:900,color:RC[rar]}}>
-                {rar}<br/><span style={{fontSize:13}}>×{summary[rar]||0}</span>
-              </div>
-            ))}
-          </div>
-          <div style={{display:'flex',justifyContent:'center',gap:8,flexWrap:'wrap',marginTop:6,paddingTop:8,borderTop:'1px solid rgba(255,255,255,0.06)'}}>
-            {newCount>0&&<div style={{background:'rgba(255,107,157,0.15)',border:'1px solid #ff6b9d',borderRadius:10,padding:'5px 12px',fontSize:11,fontWeight:900,color:'#ff6b9d'}}>✨ 新規 ×{newCount}</div>}
-            {lbCount>0&&<div style={{background:'rgba(255,152,0,0.15)',border:'1px solid #ff9800',borderRadius:10,padding:'5px 12px',fontSize:11,fontWeight:900,color:'#ff9800'}}>⭐ 限界突破 ×{lbCount}</div>}
           </div>
         </div>
         <div style={{display:'grid',gridTemplateColumns:onPullAgain?'1fr 1fr':'1fr',gap:8}}>
